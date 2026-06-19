@@ -1,0 +1,25 @@
+# TypeScript
+node_modules/
+dist/
+coverage/
+.ai-dev-loop/runs/
+.ai-dev-loop/worktrees/
+*.log
+
+# MacOS
+.DS_Store
+
+# IDE
+.vscode/
+.specstory/
+.serena/
+
+# CodingAgent
+.claude/
+.codex/
+.cursor/
+
+# Cursor
+.cursorrules
+.cursorignore
+.cursorindexingignore
