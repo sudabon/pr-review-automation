@@ -9,6 +9,14 @@ export interface WorktreeResult {
   branchName?: string;
 }
 
+export interface CleanupWorktreeInput {
+  cwd: string;
+  mode?: WorktreeResult["mode"];
+  path: string;
+  branchName?: string;
+  commandLogPath?: string;
+}
+
 export async function createWorktree(
   cwd: string,
   config: Config,
@@ -48,4 +56,37 @@ export async function createWorktree(
   }
 
   return { mode: "branch", path: cwd, branchName };
+}
+
+export async function cleanupWorktree(
+  input: CleanupWorktreeInput,
+  executor: CommandExecutor = execWithTimeout
+): Promise<void> {
+  if (input.mode !== "worktree") {
+    return;
+  }
+
+  const remove = await executor({
+    command: "git",
+    args: ["worktree", "remove", "--force", input.path],
+    cwd: input.cwd,
+    commandLogPath: input.commandLogPath
+  });
+  if (remove.exitCode !== 0) {
+    throw new Error(`Failed to remove worktree ${input.path}: ${remove.stderr || remove.all}`);
+  }
+
+  if (!input.branchName) {
+    return;
+  }
+
+  const deleteBranch = await executor({
+    command: "git",
+    args: ["branch", "-D", input.branchName],
+    cwd: input.cwd,
+    commandLogPath: input.commandLogPath
+  });
+  if (deleteBranch.exitCode !== 0) {
+    throw new Error(`Failed to delete temporary branch ${input.branchName}: ${deleteBranch.stderr || deleteBranch.all}`);
+  }
 }

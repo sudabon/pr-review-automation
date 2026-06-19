@@ -23,16 +23,14 @@ export const reviewSchema = z.strictObject({
 
 export const remainingIssueSchema = z.union([
   z.string(),
-  z
-    .object({
-      id: z.string().optional(),
-      severity: severitySchema.optional(),
-      category: categorySchema.optional(),
-      title: z.string().optional(),
-      description: z.string().optional(),
-      reason: z.string().optional()
-    })
-    .passthrough()
+  z.strictObject({
+    id: z.string().optional(),
+    severity: severitySchema.default("major"),
+    category: categorySchema.optional(),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    reason: z.string().optional()
+  })
 ]);
 
 export const finalResultSchema = z.strictObject({
@@ -51,6 +49,6 @@ export function hasImportantIssues(issues: RemainingIssue[]): boolean {
     if (typeof issue === "string") {
       return issue.trim().length > 0;
     }
-    return ["blocker", "critical", "major"].includes(issue.severity ?? "major");
+    return ["blocker", "critical", "major"].includes(issue.severity);
   });
 }

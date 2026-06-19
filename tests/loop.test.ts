@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createDefaultConfig } from "../src/config/schema.js";
@@ -82,6 +82,17 @@ describe("loop control", () => {
         maxRepeatCount: 0
       }).status
     ).toBe("human_review_required");
+    expect(
+      shouldContinue({
+        config,
+        loopNumber: 1,
+        maxLoops: 3,
+        finalResult: final("needs_changes", [{ severity: "major", title: "Bug" }]),
+        validationResult: validationPassed,
+        maxRepeatCount: 0,
+        allFixersTokenLimited: true
+      })
+    ).toMatchObject({ action: "stop", status: "human_review_required" });
   });
 
   it("tracks repeated remaining issues", () => {
@@ -108,6 +119,153 @@ describe("loop control", () => {
           executor: makeExecutor(() => execResult())
         })
       ).rejects.toThrow("loop-state.json");
+    });
+  });
+
+  it("errors when --resume references an invalid state file", async () => {
+    await withTempDir(async (dir) => {
+      const statePath = join(dir, ".ai-dev-loop", "runs", "bad-run", "meta", "loop-state.json");
+      await mkdir(join(dir, ".ai-dev-loop", "runs", "bad-run", "meta"), { recursive: true });
+      await writeFile(statePath, "{", "utf8");
+
+      await expect(
+        runLoop({
+          cwd: dir,
+          config: createDefaultConfig("demo"),
+          options: {
+            baseBranch: "main",
+            maxLoops: 1,
+            commitOnSuccess: false,
+            dryRun: true,
+            onlyReview: false,
+            resumeRunId: "bad-run"
+          },
+          executor: makeExecutor(() => execResult())
+        })
+      ).rejects.toThrow("invalid loop-state.json");
+    });
+  });
+
+  it("cleans up a temporary worktree when the loop exits", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      const executor = makeExecutor((options) => {
+        if (options.command === "git" && options.args?.join(" ") === "rev-parse --is-inside-work-tree") {
+          return execResult({ stdout: "true" });
+        }
+        if (options.command === "git" && options.args?.join(" ") === "rev-parse --show-toplevel") {
+          return execResult({ stdout: dir });
+        }
+        if (options.args?.[0] === "--version") {
+          return execResult({ stdout: "1.0.0" });
+        }
+        if (options.command === "git" && options.args?.[0] === "worktree") {
+          return execResult();
+        }
+        if (options.command === "git" && options.args?.[0] === "branch") {
+          return execResult();
+        }
+        if (options.command === "git" && options.args?.[0] === "status") {
+          return execResult({ stdout: "## feature\n" });
+        }
+        if (options.command === "git" && options.args?.[0] === "diff") {
+          return execResult({ stdout: "" });
+        }
+        return execResult();
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: {
+          baseBranch: "main",
+          maxLoops: 1,
+          commitOnSuccess: false,
+          dryRun: true,
+          onlyReview: false
+        },
+        executor
+      });
+
+      expect(result.status).toBe("completed");
+      expect(executor.calls.some((call) => call.args?.slice(0, 3).join(" ") === "worktree remove --force")).toBe(
+        true
+      );
+      expect(executor.calls.some((call) => call.args?.slice(0, 2).join(" ") === "branch -D")).toBe(true);
+    });
+  });
+
+  it("persists a failed state when fixer execution fails", async () => {
+    await withTempDir(async (dir) => {
+      await mkdir(join(dir, ".git"), { recursive: true });
+      const config = createDefaultConfig("demo");
+      config.git.use_worktree = false;
+      config.agents.fixers = ["codex"];
+      config.commands.lint = "";
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+
+      const executor = makeExecutor((options) => {
+        if (options.command === "git" && options.args?.join(" ") === "rev-parse --is-inside-work-tree") {
+          return execResult({ stdout: "true" });
+        }
+        if (options.command === "git" && options.args?.join(" ") === "rev-parse --show-toplevel") {
+          return execResult({ stdout: dir });
+        }
+        if (options.args?.[0] === "--version") {
+          return execResult({ stdout: "1.0.0" });
+        }
+        if (options.command === "git" && options.args?.[0] === "status") {
+          return execResult({ stdout: "## feature\n" });
+        }
+        if (options.command === "git" && options.args?.[0] === "diff") {
+          return execResult({ stdout: "diff --git a/file.ts b/file.ts\n+change\n" });
+        }
+        if (options.command === "codex") {
+          return execResult({ exitCode: 1, stderr: "codex failed", all: "codex failed" });
+        }
+        if (options.command === "claude") {
+          const reviewJson = {
+            summary: "review",
+            overall_risk: "medium",
+            tasks: [
+              {
+                id: "R1",
+                severity: "major",
+                category: "bug",
+                title: "Bug",
+                description: "Bug",
+                files: ["file.ts"],
+                suggested_fix: "Fix",
+                acceptance_criteria: ["fixed"]
+              }
+            ]
+          };
+          return execResult({ stdout: JSON.stringify(reviewJson), all: JSON.stringify(reviewJson) });
+        }
+        return execResult();
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: {
+          baseBranch: "main",
+          maxLoops: 1,
+          commitOnSuccess: false,
+          dryRun: false,
+          onlyReview: false
+        },
+        executor
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.reason).toContain("codex fixer failed");
+      const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
+      expect(state.status).toBe("failed");
+      expect(state.reason).toContain("codex fixer failed");
+      expect(state.current_loop).toBe(1);
     });
   });
 

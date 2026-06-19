@@ -19,6 +19,12 @@ export interface ValidationResult {
 }
 
 const VALIDATION_ORDER: ValidationStepName[] = ["lint", "typecheck", "test", "build"];
+const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9_@./:+,=\-]+$/;
+
+interface ParsedValidationCommand {
+  command: string;
+  args: string[];
+}
 
 export async function runValidation(
   config: Config,
@@ -39,10 +45,25 @@ export async function runValidation(
       continue;
     }
 
+    const parsedCommand = parseValidationCommand(command, config.project.package_manager);
+    if (!parsedCommand) {
+      await writeFile(
+        logPath,
+        `Refusing to run unsafe validation command. Use "${config.project.package_manager} run <script>" or a bare package script name.\n`,
+        "utf8"
+      );
+      steps[name] = {
+        status: "failed",
+        exit_code: 1,
+        log_path: logPath
+      };
+      continue;
+    }
+
     const result = await executor({
-      command,
+      command: parsedCommand.command,
+      args: parsedCommand.args,
       cwd,
-      shell: true,
       outputPath: logPath,
       commandLogPath
     });
@@ -62,4 +83,31 @@ export async function runValidation(
 
   await writeFile(join(validationDir, "validation-result.json"), JSON.stringify(validationResult, null, 2), "utf8");
   return validationResult;
+}
+
+export function parseValidationCommand(
+  rawCommand: string,
+  packageManager: Config["project"]["package_manager"]
+): ParsedValidationCommand | null {
+  const tokens = rawCommand.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0 || tokens.some((token) => !SAFE_TOKEN_PATTERN.test(token))) {
+    return null;
+  }
+
+  if (tokens.length === 1) {
+    return {
+      command: packageManager,
+      args: ["run", tokens[0]!]
+    };
+  }
+
+  const [command, run, script, ...rest] = tokens;
+  if (command !== packageManager || run !== "run" || !script) {
+    return null;
+  }
+
+  return {
+    command,
+    args: ["run", script, ...rest]
+  };
 }

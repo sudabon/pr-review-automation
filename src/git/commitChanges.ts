@@ -49,6 +49,9 @@ export async function commitChanges(
     cwd: input.cwd,
     commandLogPath: input.commandLogPath
   });
+  if (sha.exitCode !== 0) {
+    throw new Error(`Failed to read committed HEAD: ${sha.stderr}`);
+  }
 
   return { committed: true, sha: sha.stdout.trim() || undefined };
 }

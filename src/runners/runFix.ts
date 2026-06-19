@@ -71,10 +71,6 @@ export async function runFix(
         : await runCursorFix({ ...input, review, currentDiffPath: input.currentDiffPath }, executor);
     attempts.push(attempt);
 
-    if (attempt.execResult.timedOut) {
-      throw new Error(`${fixer} fixer timed out`);
-    }
-
     if (attempt.status === "completed") {
       return {
         status: "completed",
@@ -85,28 +81,33 @@ export async function runFix(
       };
     }
 
+    const nextFixer = input.config.agents.fixers[index + 1];
+
+    if (nextFixer) {
+      const reason = attempt.execResult.timedOut ? "timeout" : attempt.status === "token_limited" ? "token_limit" : "failed";
+      failovers.push(await recordFailover(input.commandLogPath, fixer, nextFixer, reason));
+      continue;
+    }
+
+    if (attempt.status === "token_limited") {
+      failovers.push(await recordFailover(input.commandLogPath, fixer, undefined, "token_limit"));
+      continue;
+    }
+
+    if (attempt.execResult.timedOut) {
+      throw new Error(`${fixer} fixer timed out`);
+    }
+
     if (attempt.status === "failed") {
       throw new Error(`${fixer} fixer failed: ${attempt.execResult.stderr || attempt.execResult.all}`);
     }
+  }
 
-    const nextFixer = input.config.agents.fixers[index + 1];
-    const failover = {
-      from: fixer,
-      to: nextFixer,
-      at: new Date().toISOString(),
-      reason: "token_limit"
-    };
-    failovers.push(failover);
-    if (input.commandLogPath) {
-      await writeCommandLog(input.commandLogPath, {
-        command: `fixer-failover ${fixer}${nextFixer ? `->${nextFixer}` : ""}`,
-        event: "fixer_failover",
-        reason: "token_limit",
-        started_at: failover.at,
-        ended_at: failover.at,
-        exit_code: 0
-      });
-    }
+  if (!attempts.every((attempt) => attempt.status === "token_limited")) {
+    const lastAttempt = attempts.at(-1);
+    throw new Error(
+      `No configured fixer completed successfully.${lastAttempt ? ` Last ${lastAttempt.fixer} status: ${lastAttempt.status}.` : ""}`
+    );
   }
 
   return {
@@ -123,4 +124,31 @@ function prioritizeReview(review: ReviewJson): ReviewJson {
     ...review,
     tasks: [...review.tasks].sort((left, right) => severityRank[left.severity] - severityRank[right.severity])
   };
+}
+
+async function recordFailover(
+  commandLogPath: string | undefined,
+  from: FixerName,
+  to: FixerName | undefined,
+  reason: string
+): Promise<FixFailover> {
+  const failover = {
+    from,
+    to,
+    at: new Date().toISOString(),
+    reason
+  };
+
+  if (commandLogPath) {
+    await writeCommandLog(commandLogPath, {
+      command: `fixer-failover ${from}${to ? `->${to}` : ""}`,
+      event: "fixer_failover",
+      reason,
+      started_at: failover.at,
+      ended_at: failover.at,
+      exit_code: 0
+    });
+  }
+
+  return failover;
 }

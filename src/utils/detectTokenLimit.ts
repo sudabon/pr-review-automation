@@ -26,12 +26,20 @@ export function detectTokenLimit(input: DetectTokenLimitInput): boolean {
       ? input.config.agents.token_limit_patterns[input.fixer] ?? []
       : [];
   const patterns = [...DEFAULT_TOKEN_LIMIT_PATTERNS, ...configured, ...(input.patterns ?? [])];
-  const haystack = `${input.result.stderr}\n${input.result.stdout}\n${input.result.all}`.toLowerCase();
+  const haystack = (input.result.stderr.trim() || input.result.stdout.trim() || input.result.all).toLowerCase();
 
   return patterns.some((pattern) => {
-    if (!pattern.trim()) {
+    const normalizedPattern = pattern.trim().toLowerCase();
+    if (!normalizedPattern) {
       return false;
     }
-    return haystack.includes(pattern.toLowerCase());
+    if (/^\d+$/.test(normalizedPattern)) {
+      return new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalizedPattern)}([^a-z0-9]|$)`, "i").test(haystack);
+    }
+    return haystack.includes(normalizedPattern);
   });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

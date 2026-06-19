@@ -108,6 +108,33 @@ describe("fix runners", () => {
     });
   });
 
+  it("fails over to Cursor when Codex fails normally", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor((options) => {
+        if (options.command === "codex") {
+          return execResult({ exitCode: 1, stderr: "codex unavailable", all: "codex unavailable" });
+        }
+        return execResult({ stdout: "cursor fixed", all: "cursor fixed" });
+      });
+
+      const result = await runFix(
+        {
+          config: createDefaultConfig("demo"),
+          cwd: dir,
+          fixDir: join(dir, "fix"),
+          review,
+          reviewJsonPath: "review.json",
+          dryRun: false
+        },
+        executor
+      );
+
+      expect(result.status).toBe("completed");
+      expect(result.activeFixer).toBe("cursor");
+      expect(result.failovers).toMatchObject([{ from: "codex", to: "cursor", reason: "failed" }]);
+    });
+  });
+
   it("returns human review when all fixers hit token limits", async () => {
     await withTempDir(async (dir) => {
       const executor = makeExecutor(() => execResult({ exitCode: 1, stderr: "rate limit", all: "rate limit" }));
@@ -138,5 +165,17 @@ describe("fix runners", () => {
         config
       })
     ).toBe(true);
+  });
+
+  it("does not treat stdout-only 429 text as a token limit when stderr has the real failure", () => {
+    expect(
+      detectTokenLimit({
+        result: execResult({
+          exitCode: 1,
+          stdout: "src/file.ts:429: broken assertion",
+          stderr: "authentication failed"
+        })
+      })
+    ).toBe(false);
   });
 });

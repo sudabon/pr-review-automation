@@ -57,15 +57,23 @@ export const defaultExecutor: CommandExecutor = async (options) => {
           all: true
         });
 
+    const completed = subprocess as typeof subprocess & {
+      failed?: boolean;
+      timedOut?: boolean;
+    };
+    if (completed.failed && completed.exitCode === undefined && !completed.timedOut) {
+      throw subprocess;
+    }
+
     const endedAtDate = new Date();
     const all = subprocess.all ?? `${subprocess.stdout ?? ""}${subprocess.stderr ?? ""}`;
     const result: ExecResult = {
       command: commandString,
-      exitCode: subprocess.exitCode ?? 0,
+      exitCode: completed.exitCode ?? (completed.timedOut ? 124 : 0),
       stdout: subprocess.stdout ?? "",
       stderr: subprocess.stderr ?? "",
       all,
-      timedOut: false,
+      timedOut: Boolean(completed.timedOut),
       startedAt,
       endedAt: endedAtDate.toISOString(),
       durationMs: endedAtDate.getTime() - startedAtDate.getTime()
@@ -83,6 +91,11 @@ export const defaultExecutor: CommandExecutor = async (options) => {
       timedOut?: boolean;
       message?: string;
     };
+
+    if (!maybeError.timedOut) {
+      throw error;
+    }
+
     const result: ExecResult = {
       command: commandString,
       exitCode: maybeError.exitCode ?? 124,

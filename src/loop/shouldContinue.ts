@@ -15,12 +15,25 @@ export interface LoopDecisionInput {
   allFixersTokenLimited?: boolean;
 }
 
-export interface LoopDecision {
-  action: LoopDecisionAction;
-  status: "approved" | "needs_changes" | "human_review_required" | "max_loops" | "repeated_issue" | "abnormal_diff";
-  reason: string;
-  success: boolean;
-}
+export type LoopDecision =
+  | {
+      action: "continue";
+      status: "needs_changes";
+      reason: string;
+      success: false;
+    }
+  | {
+      action: "stop";
+      status: "approved";
+      reason: string;
+      success: true;
+    }
+  | {
+      action: "stop";
+      status: "human_review_required" | "max_loops" | "repeated_issue" | "abnormal_diff";
+      reason: string;
+      success: false;
+    };
 
 export function shouldContinue(input: LoopDecisionInput): LoopDecision {
   if (input.finalResult.decision === "approved") {

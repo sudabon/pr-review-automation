@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ensureGitRepository, PreflightError } from "../src/git/checks.js";
 import { collectDiff } from "../src/git/collectDiff.js";
+import { commitChanges } from "../src/git/commitChanges.js";
 import { createRunDirectory } from "../src/logs/createRunDirectory.js";
 import { writeCommandLog } from "../src/logs/writeCommandLog.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
@@ -50,6 +51,28 @@ describe("git and logs", () => {
       expect(result.isEmpty).toBe(true);
       expect(await readFile(result.statusPath, "utf8")).toContain("main");
       expect(await readFile(result.diffPath, "utf8")).toBe("");
+    });
+  });
+
+  it("fails commit tracking when HEAD cannot be resolved", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor((options) => {
+        if (options.args?.[0] === "status") {
+          return execResult({ stdout: " M file.ts\n" });
+        }
+        if (options.args?.[0] === "add") {
+          return execResult();
+        }
+        if (options.args?.[0] === "commit") {
+          return execResult();
+        }
+        if (options.args?.join(" ") === "rev-parse HEAD") {
+          return execResult({ exitCode: 1, stderr: "bad revision" });
+        }
+        return execResult();
+      });
+
+      await expect(commitChanges({ cwd: dir }, executor)).rejects.toThrow("Failed to read committed HEAD");
     });
   });
 });
