@@ -39,7 +39,7 @@ export function issueKey(issue: RemainingIssue): string {
     return normalize(issue.id);
   }
 
-  return normalize([issue.severity, issue.category, issue.title, issue.description, issue.reason].filter(Boolean).join(":"));
+  return normalize([issue.severity, issue.category, issue.title ?? issue.description].filter(Boolean).join(":"));
 }
 
 function normalize(value: string): string {

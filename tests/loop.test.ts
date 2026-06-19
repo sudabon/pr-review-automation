@@ -25,7 +25,7 @@ function final(decision: FinalResult["decision"], remaining_issues = [], reason 
 }
 
 describe("loop control", () => {
-  it("stops on approval and continues on validation failure", () => {
+  it("stops on approval and honors stop_on_validation_failure", () => {
     const config = createDefaultConfig("demo");
     expect(
       shouldContinue({
@@ -38,14 +38,24 @@ describe("loop control", () => {
       })
     ).toMatchObject({ action: "stop", success: true });
 
+    const validationFailureInput = {
+      config,
+      loopNumber: 1,
+      maxLoops: 3,
+      finalResult: final("needs_changes", [{ severity: "major" as const, title: "Bug" }], "fix"),
+      validationResult: { ...validationPassed, status: "failed" as const },
+      maxRepeatCount: 0
+    };
+    expect(shouldContinue(validationFailureInput)).toMatchObject({
+      action: "stop",
+      status: "human_review_required"
+    });
+
+    config.limits.stop_on_validation_failure = false;
     expect(
       shouldContinue({
-        config,
-        loopNumber: 1,
-        maxLoops: 3,
-        finalResult: final("needs_changes", [{ severity: "major", title: "Bug" }], "fix"),
-        validationResult: { ...validationPassed, status: "failed" },
-        maxRepeatCount: 0
+        ...validationFailureInput,
+        config
       })
     ).toMatchObject({ action: "continue", status: "needs_changes" });
   });
@@ -100,6 +110,45 @@ describe("loop control", () => {
     const second = detectRepeatedIssues(first.counts, ["bug remains"]);
     expect(second.maxRepeatCount).toBe(2);
     expect(second.repeatedKeys).toEqual(["bug remains"]);
+
+    const firstWithId = detectRepeatedIssues({}, [
+      { id: "R1", severity: "major", title: "Original wording" }
+    ]);
+    const drifted = detectRepeatedIssues(firstWithId.counts, [
+      { id: "R1", severity: "major", description: "Completely different wording" }
+    ]);
+    expect(drifted.maxRepeatCount).toBe(2);
+    expect(drifted.repeatedKeys).toEqual(["r1"]);
+  });
+
+  it("checks abnormal diff growth against the pre-fix baseline", () => {
+    const config = createDefaultConfig("demo");
+    config.limits.abnormal_diff_line_threshold = 10;
+
+    expect(
+      shouldContinue({
+        config,
+        loopNumber: 1,
+        maxLoops: 3,
+        finalResult: final("needs_changes", ["issue"]),
+        validationResult: validationPassed,
+        maxRepeatCount: 0,
+        baselineDiffLineCount: 5_000,
+        diffLineCount: 5_005
+      }).status
+    ).toBe("needs_changes");
+    expect(
+      shouldContinue({
+        config,
+        loopNumber: 1,
+        maxLoops: 3,
+        finalResult: final("needs_changes", ["issue"]),
+        validationResult: validationPassed,
+        maxRepeatCount: 0,
+        baselineDiffLineCount: 5_000,
+        diffLineCount: 5_011
+      }).status
+    ).toBe("abnormal_diff");
   });
 
   it("errors when --resume references a missing run", async () => {
@@ -280,6 +329,8 @@ describe("loop control", () => {
       config.commands.build = "";
       config.limits.max_same_issue_repeats = 3;
       let finalReviewCount = 0;
+      let fixerCount = 0;
+      let workingTreeStatus = "";
 
       const executor = makeExecutor((options) => {
         if (options.command === "git" && options.args?.join(" ") === "rev-parse --is-inside-work-tree") {
@@ -291,6 +342,9 @@ describe("loop control", () => {
         if (options.args?.[0] === "--version") {
           return execResult({ stdout: "1.0.0" });
         }
+        if (options.command === "git" && options.args?.join(" ") === "status --porcelain") {
+          return execResult({ stdout: workingTreeStatus });
+        }
         if (options.command === "git" && options.args?.[0] === "status") {
           return execResult({ stdout: "## feature\n" });
         }
@@ -298,6 +352,8 @@ describe("loop control", () => {
           return execResult({ stdout: "diff --git a/file.ts b/file.ts\n+change\n" });
         }
         if (options.command === "codex") {
+          fixerCount += 1;
+          workingTreeStatus = ` M file-${fixerCount}.ts\n`;
           return execResult({ stdout: "fixed", all: "fixed" });
         }
         if (options.command === "claude") {
@@ -350,5 +406,421 @@ describe("loop control", () => {
       expect(state.current_loop).toBe(3);
       expect(state.final_decision).toBe("approved");
     });
+  });
+
+  it("stops dry-run after review and planning without validation, final review, or commit", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.git.use_worktree = false;
+      const reviewJson = {
+        summary: "review",
+        overall_risk: "medium",
+        tasks: [
+          {
+            id: "R1",
+            severity: "major",
+            category: "bug",
+            title: "Bug",
+            description: "Bug",
+            files: ["file.ts"],
+            suggested_fix: "Fix",
+            acceptance_criteria: ["fixed"]
+          }
+        ]
+      };
+      const executor = makeExecutor((options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (options.command === "git" && args === "rev-parse --is-inside-work-tree") {
+          return execResult({ stdout: "true" });
+        }
+        if (options.command === "git" && args === "rev-parse --show-toplevel") {
+          return execResult({ stdout: dir });
+        }
+        if (options.args?.[0] === "--version") {
+          return execResult({ stdout: "1.0.0" });
+        }
+        if (options.command === "git" && options.args?.[0] === "status") {
+          return execResult({ stdout: "## feature\n" });
+        }
+        if (options.command === "git" && options.args?.[0] === "diff") {
+          return execResult({ stdout: "+change\n" });
+        }
+        if (options.command === "claude") {
+          return execResult({ stdout: JSON.stringify(reviewJson), all: JSON.stringify(reviewJson) });
+        }
+        throw new Error(`Unexpected command in dry-run: ${options.command} ${args}`);
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: {
+          baseBranch: "main",
+          maxLoops: 3,
+          commitOnSuccess: true,
+          dryRun: true,
+          onlyReview: false
+        },
+        executor
+      });
+
+      expect(result.status).toBe("completed");
+      expect(executor.calls.filter((call) => call.command === "claude")).toHaveLength(2);
+      expect(executor.calls.some((call) => call.command === "codex" || call.command === "agent")).toBe(false);
+      expect(executor.calls.some((call) => call.args?.[0] === "commit")).toBe(false);
+      const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
+      expect(state.history.at(-1)?.action).toBe("dry_run");
+    });
+  });
+
+  it("stops an integrated loop when a stable issue id reaches the repeat limit", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.git.use_worktree = false;
+      config.commands.lint = "";
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      config.limits.max_same_issue_repeats = 2;
+      let fixerCount = 0;
+      let finalCount = 0;
+      let status = "";
+
+      const executor = makeExecutor((options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (options.command === "git" && args === "rev-parse --is-inside-work-tree") {
+          return execResult({ stdout: "true" });
+        }
+        if (options.command === "git" && args === "rev-parse --show-toplevel") {
+          return execResult({ stdout: dir });
+        }
+        if (options.args?.[0] === "--version") {
+          return execResult({ stdout: "1.0.0" });
+        }
+        if (options.command === "git" && args === "status --porcelain") {
+          return execResult({ stdout: status });
+        }
+        if (options.command === "git" && options.args?.[0] === "status") {
+          return execResult({ stdout: "## feature\n" });
+        }
+        if (options.command === "git" && options.args?.[0] === "diff") {
+          return execResult({ stdout: "+change\n" });
+        }
+        if (options.command === "codex") {
+          fixerCount += 1;
+          status = ` M fix-${fixerCount}.ts\n`;
+          return execResult({ stdout: "fixed" });
+        }
+        if (options.command === "claude") {
+          const prompt = options.args?.at(-1) ?? "";
+          if (prompt.includes("Perform the final review")) {
+            finalCount += 1;
+            const remaining = {
+              id: "R1",
+              severity: "major",
+              title: finalCount === 1 ? "Original wording" : "Rephrased finding"
+            };
+            const output = { decision: "needs_changes", remaining_issues: [remaining], reason: "still present" };
+            return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
+          }
+          const output = {
+            summary: "review",
+            overall_risk: "medium",
+            tasks: [
+              {
+                id: "R1",
+                severity: "major",
+                category: "bug",
+                title: "Bug",
+                description: "Bug",
+                files: ["file.ts"],
+                suggested_fix: "Fix",
+                acceptance_criteria: ["fixed"]
+              }
+            ]
+          };
+          return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
+        }
+        return execResult();
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: {
+          baseBranch: "main",
+          maxLoops: 3,
+          commitOnSuccess: false,
+          dryRun: false,
+          onlyReview: false
+        },
+        executor
+      });
+
+      expect(result).toMatchObject({ status: "failed", decision: { status: "repeated_issue" } });
+      expect(finalCount).toBe(2);
+    });
+  });
+
+  it("stops an integrated loop only when the fixer increment exceeds the abnormal-diff threshold", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.git.use_worktree = false;
+      config.commands.lint = "";
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      config.limits.abnormal_diff_line_threshold = 3;
+      let fixed = false;
+      let status = "";
+
+      const executor = makeExecutor((options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (options.command === "git" && args === "rev-parse --is-inside-work-tree") {
+          return execResult({ stdout: "true" });
+        }
+        if (options.command === "git" && args === "rev-parse --show-toplevel") {
+          return execResult({ stdout: dir });
+        }
+        if (options.args?.[0] === "--version") {
+          return execResult({ stdout: "1.0.0" });
+        }
+        if (options.command === "git" && args === "status --porcelain") {
+          return execResult({ stdout: status });
+        }
+        if (options.command === "git" && options.args?.[0] === "status") {
+          return execResult({ stdout: "## feature\n" });
+        }
+        if (options.command === "git" && options.args?.[0] === "diff") {
+          return execResult({ stdout: fixed ? "1\n2\n3\n4\n5\n" : "1\n" });
+        }
+        if (options.command === "codex") {
+          fixed = true;
+          status = " M file.ts\n";
+          return execResult({ stdout: "fixed" });
+        }
+        if (options.command === "claude") {
+          const prompt = options.args?.at(-1) ?? "";
+          const output = prompt.includes("Perform the final review")
+            ? {
+                decision: "needs_changes",
+                remaining_issues: [{ id: "R1", severity: "major", title: "Bug" }],
+                reason: "more"
+              }
+            : {
+                summary: "review",
+                overall_risk: "medium",
+                tasks: [
+                  {
+                    id: "R1",
+                    severity: "major",
+                    category: "bug",
+                    title: "Bug",
+                    description: "Bug",
+                    files: ["file.ts"],
+                    suggested_fix: "Fix",
+                    acceptance_criteria: ["fixed"]
+                  }
+                ]
+              };
+          return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
+        }
+        return execResult();
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: {
+          baseBranch: "main",
+          targetBranch: "feature",
+          maxLoops: 3,
+          commitOnSuccess: false,
+          dryRun: false,
+          onlyReview: false
+        },
+        executor
+      });
+
+      expect(result).toMatchObject({ status: "failed", decision: { status: "abnormal_diff" } });
+    });
+  });
+
+  it("resumes a preserved run and completes the next loop", async () => {
+    await withTempDir(async (dir) => {
+      const runId = "resume-run";
+      const statePath = join(dir, ".ai-dev-loop", "runs", runId, "meta", "loop-state.json");
+      await mkdir(join(dir, ".ai-dev-loop", "runs", runId, "meta"), { recursive: true });
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          run_id: runId,
+          status: "failed",
+          current_loop: 1,
+          max_loops: 3,
+          worktree_path: dir,
+          worktree_mode: "current",
+          remaining_issues: [],
+          repeated_issues: {},
+          failovers: [],
+          history: []
+        }),
+        "utf8"
+      );
+      const config = createDefaultConfig("demo");
+      config.commands.lint = "";
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      let status = "";
+      const executor = makeExecutor((options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (options.command === "git" && args === "status --porcelain") {
+          return execResult({ stdout: status });
+        }
+        if (options.command === "git" && options.args?.[0] === "status") {
+          return execResult({ stdout: "## feature\n" });
+        }
+        if (options.command === "git" && options.args?.[0] === "diff") {
+          return execResult({ stdout: "+change\n" });
+        }
+        if (options.command === "codex") {
+          status = " M file.ts\n";
+          return execResult({ stdout: "fixed" });
+        }
+        if (options.command === "claude") {
+          const prompt = options.args?.at(-1) ?? "";
+          const output = prompt.includes("Perform the final review")
+            ? { decision: "approved", remaining_issues: [], reason: "clean" }
+            : {
+                summary: "review",
+                overall_risk: "medium",
+                tasks: [
+                  {
+                    id: "R1",
+                    severity: "major",
+                    category: "bug",
+                    title: "Bug",
+                    description: "Bug",
+                    files: ["file.ts"],
+                    suggested_fix: "Fix",
+                    acceptance_criteria: ["fixed"]
+                  }
+                ]
+              };
+          return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
+        }
+        return execResult();
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: {
+          baseBranch: "main",
+          maxLoops: 3,
+          commitOnSuccess: false,
+          dryRun: false,
+          onlyReview: false,
+          resumeRunId: runId
+        },
+        executor
+      });
+
+      expect(result.status).toBe("completed");
+      const state = JSON.parse(await readFile(statePath, "utf8"));
+      expect(state.current_loop).toBe(2);
+      expect(state.status).toBe("approved");
+    });
+  });
+
+  it("commits approved fixes only when both commit gates are enabled", async () => {
+    const scenarios = [
+      { option: true, config: true, expected: true },
+      { option: false, config: true, expected: false },
+      { option: true, config: false, expected: false }
+    ];
+
+    for (const scenario of scenarios) {
+      await withTempDir(async (dir) => {
+        const config = createDefaultConfig("demo");
+        config.git.use_worktree = false;
+        config.git.commit_on_success = scenario.config;
+        config.commands.lint = "";
+        config.commands.typecheck = "";
+        config.commands.test = "";
+        config.commands.build = "";
+        let status = "";
+        const executor = makeExecutor((options) => {
+          const args = options.args?.join(" ") ?? "";
+          if (options.command === "git" && args === "rev-parse --is-inside-work-tree") {
+            return execResult({ stdout: "true" });
+          }
+          if (options.command === "git" && args === "rev-parse --show-toplevel") {
+            return execResult({ stdout: dir });
+          }
+          if (options.command === "git" && args === "rev-parse HEAD") {
+            return execResult({ stdout: "abc123\n" });
+          }
+          if (options.args?.[0] === "--version") {
+            return execResult({ stdout: "1.0.0" });
+          }
+          if (options.command === "git" && args === "status --porcelain") {
+            return execResult({ stdout: status });
+          }
+          if (options.command === "git" && options.args?.[0] === "status") {
+            return execResult({ stdout: "## feature\n" });
+          }
+          if (options.command === "git" && options.args?.[0] === "diff") {
+            return execResult({ stdout: "+change\n" });
+          }
+          if (options.command === "codex") {
+            status = " M file.ts\n";
+            return execResult({ stdout: "fixed" });
+          }
+          if (options.command === "claude") {
+            const prompt = options.args?.at(-1) ?? "";
+            const output = prompt.includes("Perform the final review")
+              ? { decision: "approved", remaining_issues: [], reason: "clean" }
+              : {
+                  summary: "review",
+                  overall_risk: "medium",
+                  tasks: [
+                    {
+                      id: "R1",
+                      severity: "major",
+                      category: "bug",
+                      title: "Bug",
+                      description: "Bug",
+                      files: ["file.ts"],
+                      suggested_fix: "Fix",
+                      acceptance_criteria: ["fixed"]
+                    }
+                  ]
+                };
+            return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
+          }
+          return execResult();
+        });
+
+        const result = await runLoop({
+          cwd: dir,
+          config,
+          options: {
+            baseBranch: "main",
+            maxLoops: 1,
+            commitOnSuccess: scenario.option,
+            dryRun: false,
+            onlyReview: false
+          },
+          executor
+        });
+
+        expect(result.status).toBe("completed");
+        expect(executor.calls.some((call) => call.command === "git" && call.args?.[0] === "commit")).toBe(
+          scenario.expected
+        );
+      });
+    }
   });
 });

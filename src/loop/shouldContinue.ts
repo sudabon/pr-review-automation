@@ -12,6 +12,7 @@ export interface LoopDecisionInput {
   validationResult: ValidationResult;
   maxRepeatCount: number;
   diffLineCount?: number;
+  baselineDiffLineCount?: number;
   allFixersTokenLimited?: boolean;
 }
 
@@ -36,6 +37,15 @@ export type LoopDecision =
     };
 
 export function shouldContinue(input: LoopDecisionInput): LoopDecision {
+  if (input.validationResult.status === "failed" && input.config.limits.stop_on_validation_failure) {
+    return {
+      action: "stop",
+      status: "human_review_required",
+      reason: "Validation failed and stop_on_validation_failure is enabled.",
+      success: false
+    };
+  }
+
   if (input.finalResult.decision === "approved") {
     return { action: "stop", status: "approved", reason: input.finalResult.reason, success: true };
   }
@@ -53,11 +63,12 @@ export function shouldContinue(input: LoopDecisionInput): LoopDecision {
     return { action: "stop", status: "human_review_required", reason: input.finalResult.reason, success: false };
   }
 
-  if (input.diffLineCount && input.diffLineCount > input.config.limits.abnormal_diff_line_threshold) {
+  const diffGrowth = Math.max(0, (input.diffLineCount ?? 0) - (input.baselineDiffLineCount ?? 0));
+  if (diffGrowth > input.config.limits.abnormal_diff_line_threshold) {
     return {
       action: "stop",
       status: "abnormal_diff",
-      reason: `Diff grew beyond ${input.config.limits.abnormal_diff_line_threshold} lines.`,
+      reason: `Fixer increased the diff by ${diffGrowth} lines, beyond the ${input.config.limits.abnormal_diff_line_threshold}-line threshold.`,
       success: false
     };
   }

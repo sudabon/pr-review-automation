@@ -54,7 +54,10 @@ export interface LoopState {
   worktree_path: string;
   worktree_mode?: WorktreeResult["mode"];
   worktree_branch?: string;
+  worktree_original_branch?: string;
+  worktree_original_ref?: string;
   final_decision?: FinalResult["decision"];
+  baseline_diff_line_count?: number;
   remaining_issues: RemainingIssue[];
   repeated_issues: RepeatedIssueCounts;
   failovers: FixFailover[];
@@ -62,7 +65,7 @@ export interface LoopState {
     loop: number;
     decision?: FinalResult["decision"];
     validation?: ValidationResult["status"];
-    action?: LoopDecision["action"] | "only_review";
+    action?: LoopDecision["action"] | "only_review" | "dry_run";
     reason?: string;
   }>;
 }
@@ -97,7 +100,10 @@ const loopStateSchema = z
     worktree_path: z.string().min(1),
     worktree_mode: z.enum(["worktree", "branch", "current"]).optional(),
     worktree_branch: z.string().optional(),
+    worktree_original_branch: z.string().optional(),
+    worktree_original_ref: z.string().optional(),
     final_decision: z.enum(["approved", "needs_changes", "human_review_required"]).optional(),
+    baseline_diff_line_count: z.number().int().nonnegative().optional(),
     remaining_issues: z.array(remainingIssueSchema),
     repeated_issues: z.record(z.string(), z.number().int().nonnegative()),
     failovers: z.array(
@@ -116,7 +122,7 @@ const loopStateSchema = z
           loop: z.number().int().nonnegative(),
           decision: z.enum(["approved", "needs_changes", "human_review_required"]).optional(),
           validation: z.enum(["passed", "failed"]).optional(),
-          action: z.enum(["continue", "stop", "only_review"]).optional(),
+          action: z.enum(["continue", "stop", "only_review", "dry_run"]).optional(),
           reason: z.string().optional()
         })
         .passthrough()
@@ -132,6 +138,9 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
   let state = input.options.resumeRunId
     ? await loadExistingState(runDirectory)
     : await initializeRun(input, runDirectory, executor);
+  if (input.options.resumeRunId) {
+    state = await prepareResumeWorktree(input.cwd, state, runDirectory.commandLogPath, executor);
+  }
   const worktreePath = state.worktree_path;
   const maxLoops = input.options.maxLoops;
   const startLoop = input.options.resumeRunId ? Math.min(state.current_loop + 1, maxLoops) : 1;
@@ -160,6 +169,10 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         },
         executor
       );
+      const baselineDiffLineCount = state.baseline_diff_line_count ?? diff.lineCount;
+      if (state.baseline_diff_line_count === undefined) {
+        await persistState({ ...state, baseline_diff_line_count: baselineDiffLineCount });
+      }
 
       if (diff.isEmpty) {
         const nextState: LoopState = {
@@ -223,6 +236,26 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         executor
       );
 
+      if (input.options.dryRun) {
+        const nextState: LoopState = {
+          ...state,
+          status: "completed",
+          reason: "Stopped after review and fix planning because --dry-run was set.",
+          current_loop: loopNumber,
+          history: [
+            ...state.history,
+            { loop: loopNumber, action: "dry_run", reason: "Stopped after review and fix planning." }
+          ]
+        };
+        await persistState(nextState);
+        return {
+          status: "completed",
+          reason: "Stopped after review and fix planning.",
+          runId: runDirectory.runId,
+          runDirectory: runDirectory.root
+        };
+      }
+
       if (fix.status === "human_review_required") {
         const nextState: LoopState = {
           ...state,
@@ -283,6 +316,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         validationResult: validation,
         maxRepeatCount: repeated.maxRepeatCount,
         diffLineCount: refreshedDiff.lineCount,
+        baselineDiffLineCount,
         allFixersTokenLimited
       });
 
@@ -359,7 +393,13 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
       runDirectory: runDirectory.root
     };
   } finally {
-    await cleanupLoopWorktree(input.cwd, state, runDirectory.commandLogPath, executor);
+    await cleanupLoopWorktree(
+      input.cwd,
+      state,
+      runDirectory.commandLogPath,
+      !["completed", "approved"].includes(state.status),
+      executor
+    );
   }
 }
 
@@ -397,6 +437,8 @@ async function initializeRun(
     worktree_path: worktree.path,
     worktree_mode: worktree.mode,
     worktree_branch: worktree.branchName,
+    worktree_original_branch: worktree.originalBranch,
+    worktree_original_ref: worktree.originalRef,
     remaining_issues: [],
     repeated_issues: {},
     failovers: [],
@@ -442,6 +484,7 @@ async function cleanupLoopWorktree(
   cwd: string,
   state: LoopState,
   commandLogPath: string,
+  preserveForResume: boolean,
   executor: CommandExecutor
 ): Promise<void> {
   try {
@@ -451,6 +494,9 @@ async function cleanupLoopWorktree(
         mode: state.worktree_mode,
         path: state.worktree_path,
         branchName: state.worktree_branch,
+        originalBranch: state.worktree_original_branch,
+        originalRef: state.worktree_original_ref,
+        preserveForResume,
         commandLogPath
       },
       executor
@@ -458,6 +504,70 @@ async function cleanupLoopWorktree(
   } catch {
     // Cleanup is best-effort so it does not mask the loop result.
   }
+}
+
+async function prepareResumeWorktree(
+  cwd: string,
+  state: LoopState,
+  commandLogPath: string,
+  executor: CommandExecutor
+): Promise<LoopState> {
+  if (["completed", "approved"].includes(state.status)) {
+    throw new Error(`Cannot resume ${state.run_id}: the run is already complete.`);
+  }
+
+  try {
+    await access(state.worktree_path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`Cannot resume ${state.run_id}: worktree does not exist at ${state.worktree_path}.`);
+    }
+    throw error;
+  }
+
+  if (state.worktree_mode !== "branch" || !state.worktree_branch) {
+    return state;
+  }
+
+  const currentBranch = await executor({
+    command: "git",
+    args: ["branch", "--show-current"],
+    cwd,
+    commandLogPath
+  });
+  if (currentBranch.exitCode !== 0) {
+    throw new Error(`Cannot resume ${state.run_id}: failed to inspect the current branch.`);
+  }
+
+  const currentBranchName = currentBranch.stdout.trim();
+  if (currentBranchName === state.worktree_branch) {
+    return state;
+  }
+
+  const branchExists = await executor({
+    command: "git",
+    args: ["show-ref", "--verify", "--quiet", `refs/heads/${state.worktree_branch}`],
+    cwd,
+    commandLogPath
+  });
+  if (branchExists.exitCode !== 0) {
+    throw new Error(`Cannot resume ${state.run_id}: temporary branch ${state.worktree_branch} no longer exists.`);
+  }
+
+  const switched = await executor({
+    command: "git",
+    args: ["switch", state.worktree_branch],
+    cwd,
+    commandLogPath
+  });
+  if (switched.exitCode !== 0) {
+    throw new Error(`Cannot resume ${state.run_id}: failed to switch to ${state.worktree_branch}.`);
+  }
+
+  return {
+    ...state,
+    worktree_original_branch: state.worktree_original_branch ?? (currentBranchName || undefined)
+  };
 }
 
 function formatErrorMessage(error: unknown): string {

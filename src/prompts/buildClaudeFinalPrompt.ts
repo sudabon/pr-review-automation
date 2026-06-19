@@ -24,8 +24,9 @@ export function buildClaudeFinalPrompt(input: ClaudeFinalPromptInput): string {
     "",
     `Write JSON to ${input.finalResultPath} with exactly:`,
     "- decision: approved | needs_changes | human_review_required",
-    "- remaining_issues: array",
+    "- remaining_issues: array of issue objects with a stable id, severity, and non-empty title or description",
     "- reason: string",
+    "Reuse the original review task id when an issue remains. Keep that id unchanged across review loops even if wording changes.",
     "",
     `Project: ${input.config.project.name}`
   ].join("\n");

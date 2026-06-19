@@ -21,14 +21,22 @@ export interface DetectTokenLimitInput {
 }
 
 export function detectTokenLimit(input: DetectTokenLimitInput): boolean {
+  return detectTokenLimitPattern(input) !== undefined;
+}
+
+export function detectTokenLimitPattern(input: DetectTokenLimitInput): string | undefined {
+  if (input.result.exitCode === 0) {
+    return undefined;
+  }
+
   const configured =
     input.fixer && input.config
       ? input.config.agents.token_limit_patterns[input.fixer] ?? []
       : [];
   const patterns = [...DEFAULT_TOKEN_LIMIT_PATTERNS, ...configured, ...(input.patterns ?? [])];
-  const haystack = (input.result.stderr.trim() || input.result.stdout.trim() || input.result.all).toLowerCase();
+  const haystack = input.result.stderr.trim().slice(-4_000).toLowerCase();
 
-  return patterns.some((pattern) => {
+  return patterns.find((pattern) => {
     const normalizedPattern = pattern.trim().toLowerCase();
     if (!normalizedPattern) {
       return false;

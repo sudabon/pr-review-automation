@@ -29,6 +29,7 @@ export function buildClaudeReviewPrompt(input: ClaudeReviewPromptInput): string 
     "",
     "Allowed severities: blocker, critical, major, minor, nit.",
     "Allowed categories: bug, security, type, test, refactor, design, docs.",
+    "Use a deterministic task id based on the finding identity and source location. Keep the same id when the same finding is reworded in a later loop.",
     "",
     "Also return a Markdown review summary in the CLI output."
   ].join("\n");

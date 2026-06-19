@@ -7,6 +7,8 @@ export interface WorktreeResult {
   mode: "worktree" | "branch" | "current";
   path: string;
   branchName?: string;
+  originalBranch?: string;
+  originalRef?: string;
 }
 
 export interface CleanupWorktreeInput {
@@ -14,6 +16,9 @@ export interface CleanupWorktreeInput {
   mode?: WorktreeResult["mode"];
   path: string;
   branchName?: string;
+  originalBranch?: string;
+  originalRef?: string;
+  preserveForResume?: boolean;
   commandLogPath?: string;
 }
 
@@ -44,6 +49,24 @@ export async function createWorktree(
     return { mode: "worktree", path: worktreePath, branchName };
   }
 
+  const originalBranchResult = await executor({
+    command: "git",
+    args: ["branch", "--show-current"],
+    cwd,
+    commandLogPath
+  });
+  const originalRefResult = await executor({
+    command: "git",
+    args: ["rev-parse", "HEAD"],
+    cwd,
+    commandLogPath
+  });
+  if (originalBranchResult.exitCode !== 0 || originalRefResult.exitCode !== 0) {
+    throw new Error(
+      `Failed to record the original checkout before creating a temporary branch: ${originalBranchResult.stderr || originalRefResult.stderr}`
+    );
+  }
+
   const branchResult = await executor({
     command: "git",
     args: ["switch", "-c", branchName],
@@ -55,14 +78,41 @@ export async function createWorktree(
     throw new Error(`Failed to create worktree or temporary branch: ${branchResult.stderr || addResult.stderr}`);
   }
 
-  return { mode: "branch", path: cwd, branchName };
+  return {
+    mode: "branch",
+    path: cwd,
+    branchName,
+    originalBranch: originalBranchResult.stdout.trim() || undefined,
+    originalRef: originalRefResult.stdout.trim() || undefined
+  };
 }
 
 export async function cleanupWorktree(
   input: CleanupWorktreeInput,
   executor: CommandExecutor = execWithTimeout
 ): Promise<void> {
-  if (input.mode !== "worktree") {
+  if (input.mode === "branch") {
+    const restoreArgs = input.originalBranch
+      ? ["switch", input.originalBranch]
+      : input.originalRef
+        ? ["switch", "--detach", input.originalRef]
+        : undefined;
+    if (!restoreArgs) {
+      return;
+    }
+    const restore = await executor({
+      command: "git",
+      args: restoreArgs,
+      cwd: input.cwd,
+      commandLogPath: input.commandLogPath
+    });
+    if (restore.exitCode !== 0) {
+      throw new Error(`Failed to restore the original checkout: ${restore.stderr || restore.all}`);
+    }
+    return;
+  }
+
+  if (input.mode !== "worktree" || input.preserveForResume) {
     return;
   }
 

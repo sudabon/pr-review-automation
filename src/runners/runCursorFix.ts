@@ -2,10 +2,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Config } from "../config/schema.js";
 import { buildCursorFixPrompt } from "../prompts/buildCursorFixPrompt.js";
-import { detectTokenLimit } from "../utils/detectTokenLimit.js";
+import { writeCommandLog } from "../logs/writeCommandLog.js";
+import { detectTokenLimitPattern } from "../utils/detectTokenLimit.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
 import type { ReviewJson } from "./reviewSchemas.js";
-import type { FixRunnerResult } from "./runCodexFix.js";
+import { readWorkingTreeSnapshot, type FixRunnerResult } from "./runCodexFix.js";
 
 export interface CursorFixRunnerInput {
   config: Config;
@@ -31,6 +32,8 @@ export async function runCursorFix(
   });
   await writeFile(promptPath, prompt, "utf8");
 
+  const statusBefore = await readWorkingTreeSnapshot(input.cwd, input.commandLogPath, executor);
+
   const execResult = await executor({
     command: input.config.cursor.command,
     args: [...input.config.cursor.args, prompt],
@@ -39,13 +42,37 @@ export async function runCursorFix(
     outputPath,
     commandLogPath: input.commandLogPath
   });
+  const statusAfter = await readWorkingTreeSnapshot(input.cwd, input.commandLogPath, executor);
+  const changed = statusBefore !== statusAfter;
+  const tokenLimitPattern = execResult.timedOut
+    ? undefined
+    : detectTokenLimitPattern({ result: execResult, fixer: "cursor", config: input.config });
 
-  const tokenLimited = detectTokenLimit({ result: execResult, fixer: "cursor", config: input.config });
+  if (tokenLimitPattern && input.commandLogPath) {
+    const at = new Date().toISOString();
+    await writeCommandLog(input.commandLogPath, {
+      command: "token-limit-detected cursor",
+      event: "token_limit_detected",
+      reason: tokenLimitPattern,
+      started_at: at,
+      ended_at: at,
+      exit_code: execResult.exitCode
+    });
+  }
+
+  const requiresChanges = input.review.tasks.length > 0;
+  const completed = execResult.exitCode === 0 && !execResult.timedOut && (changed || !requiresChanges);
   return {
     fixer: "cursor",
-    status: execResult.exitCode === 0 ? "completed" : tokenLimited ? "token_limited" : "failed",
+    status: completed ? "completed" : tokenLimitPattern ? "token_limited" : "failed",
     promptPath,
     outputPath,
-    execResult
+    execResult,
+    changed,
+    failureReason:
+      execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && !changed
+        ? "cursor exited successfully but made no working-tree changes"
+        : undefined,
+    tokenLimitPattern
   };
 }

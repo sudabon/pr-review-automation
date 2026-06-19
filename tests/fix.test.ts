@@ -60,7 +60,14 @@ describe("fix runners", () => {
 
   it("runs the first configured fixer and prioritizes major comments", async () => {
     await withTempDir(async (dir) => {
-      const executor = makeExecutor(() => execResult({ stdout: "fixed", all: "fixed" }));
+      let status = "";
+      const executor = makeExecutor((options) => {
+        if (options.command === "git") {
+          return execResult({ stdout: status });
+        }
+        status = " M src/a.ts\n";
+        return execResult({ stdout: "fixed", all: "fixed" });
+      });
       const result = await runFix(
         {
           config: createDefaultConfig("demo"),
@@ -82,10 +89,15 @@ describe("fix runners", () => {
 
   it("fails over to Cursor when Codex reports token limits", async () => {
     await withTempDir(async (dir) => {
+      let status = "";
       const executor = makeExecutor((options) => {
+        if (options.command === "git") {
+          return execResult({ stdout: status });
+        }
         if (options.command === "codex") {
           return execResult({ exitCode: 1, stderr: "quota exceeded", all: "quota exceeded" });
         }
+        status = " M src/a.ts\n";
         return execResult({ stdout: "cursor fixed", all: "cursor fixed" });
       });
 
@@ -105,16 +117,75 @@ describe("fix runners", () => {
       expect(result.status).toBe("completed");
       expect(result.activeFixer).toBe("cursor");
       expect(result.failovers).toHaveLength(1);
+      const commandLog = await readFile(join(dir, "meta", "command-log.jsonl"), "utf8");
+      expect(commandLog).toContain('"event":"token_limit_detected"');
+      expect(commandLog).toContain('"reason":"quota exceeded"');
     });
   });
 
-  it("fails over to Cursor when Codex fails normally", async () => {
+  it("does not fail over when Codex fails normally", async () => {
     await withTempDir(async (dir) => {
       const executor = makeExecutor((options) => {
+        if (options.command === "git") {
+          return execResult();
+        }
         if (options.command === "codex") {
           return execResult({ exitCode: 1, stderr: "codex unavailable", all: "codex unavailable" });
         }
-        return execResult({ stdout: "cursor fixed", all: "cursor fixed" });
+        throw new Error("Cursor must not run after a hard failure");
+      });
+
+      await expect(
+        runFix(
+          {
+            config: createDefaultConfig("demo"),
+            cwd: dir,
+            fixDir: join(dir, "fix"),
+            review,
+            reviewJsonPath: "review.json",
+            dryRun: false
+          },
+          executor
+        )
+      ).rejects.toThrow("codex unavailable");
+      expect(executor.calls.some((call) => call.command === "agent")).toBe(false);
+    });
+  });
+
+  it("rejects a successful fixer that makes no working-tree changes", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor((options) =>
+        options.command === "git" ? execResult() : execResult({ stdout: "nothing to apply" })
+      );
+
+      await expect(
+        runFix(
+          {
+            config: createDefaultConfig("demo"),
+            cwd: dir,
+            fixDir: join(dir, "fix"),
+            review,
+            reviewJsonPath: "review.json",
+            dryRun: false
+          },
+          executor
+        )
+      ).rejects.toThrow("made no working-tree changes");
+    });
+  });
+
+  it("detects content changes when an already-modified file keeps the same porcelain status", async () => {
+    await withTempDir(async (dir) => {
+      let diff = "before";
+      const executor = makeExecutor((options) => {
+        if (options.command === "git" && options.args?.[0] === "status") {
+          return execResult({ stdout: " M src/a.ts\n" });
+        }
+        if (options.command === "git") {
+          return execResult({ stdout: diff });
+        }
+        diff = "after";
+        return execResult({ stdout: "fixed" });
       });
 
       const result = await runFix(
@@ -130,14 +201,17 @@ describe("fix runners", () => {
       );
 
       expect(result.status).toBe("completed");
-      expect(result.activeFixer).toBe("cursor");
-      expect(result.failovers).toMatchObject([{ from: "codex", to: "cursor", reason: "failed" }]);
+      expect(result.attempts[0]?.changed).toBe(true);
     });
   });
 
   it("returns human review when all fixers hit token limits", async () => {
     await withTempDir(async (dir) => {
-      const executor = makeExecutor(() => execResult({ exitCode: 1, stderr: "rate limit", all: "rate limit" }));
+      const executor = makeExecutor((options) =>
+        options.command === "git"
+          ? execResult()
+          : execResult({ exitCode: 1, stderr: "rate limit", all: "rate limit" })
+      );
       const result = await runFix(
         {
           config: createDefaultConfig("demo"),
@@ -175,6 +249,20 @@ describe("fix runners", () => {
           stdout: "src/file.ts:429: broken assertion",
           stderr: "authentication failed"
         })
+      })
+    ).toBe(false);
+  });
+
+  it("does not classify a successful exit or an old stderr prefix as a token limit", () => {
+    expect(
+      detectTokenLimit({
+        result: execResult({ exitCode: 0, stderr: "quota exceeded" })
+      })
+    ).toBe(false);
+
+    expect(
+      detectTokenLimit({
+        result: execResult({ exitCode: 1, stderr: `quota exceeded${"x".repeat(4_100)}` })
       })
     ).toBe(false);
   });

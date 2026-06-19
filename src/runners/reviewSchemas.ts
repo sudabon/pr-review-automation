@@ -21,17 +21,20 @@ export const reviewSchema = z.strictObject({
   tasks: z.array(reviewTaskSchema)
 });
 
-export const remainingIssueSchema = z.union([
-  z.string(),
-  z.strictObject({
-    id: z.string().optional(),
+const remainingIssueObjectSchema = z
+  .strictObject({
+    id: z.string().min(1).optional(),
     severity: severitySchema.default("major"),
     category: categorySchema.optional(),
-    title: z.string().optional(),
-    description: z.string().optional(),
+    title: z.string().trim().min(1).optional(),
+    description: z.string().trim().min(1).optional(),
     reason: z.string().optional()
   })
-]);
+  .refine((issue) => issue.title !== undefined || issue.description !== undefined, {
+    message: "A remaining issue must include a non-empty title or description."
+  });
+
+export const remainingIssueSchema = z.union([z.string(), remainingIssueObjectSchema]);
 
 export const finalResultSchema = z.strictObject({
   decision: z.enum(["approved", "needs_changes", "human_review_required"]),

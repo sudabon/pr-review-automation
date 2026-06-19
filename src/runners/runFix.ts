@@ -83,8 +83,8 @@ export async function runFix(
 
     const nextFixer = input.config.agents.fixers[index + 1];
 
-    if (nextFixer) {
-      const reason = attempt.execResult.timedOut ? "timeout" : attempt.status === "token_limited" ? "token_limit" : "failed";
+    if (attempt.status === "token_limited" && nextFixer) {
+      const reason = "token_limit";
       failovers.push(await recordFailover(input.commandLogPath, fixer, nextFixer, reason));
       continue;
     }
@@ -99,7 +99,9 @@ export async function runFix(
     }
 
     if (attempt.status === "failed") {
-      throw new Error(`${fixer} fixer failed: ${attempt.execResult.stderr || attempt.execResult.all}`);
+      throw new Error(
+        `${fixer} fixer failed: ${attempt.failureReason || attempt.execResult.stderr || attempt.execResult.all || "unknown error"}`
+      );
     }
   }
 

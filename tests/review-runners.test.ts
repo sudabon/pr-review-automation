@@ -1,9 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createDefaultConfig } from "../src/config/schema.js";
 import { runClaudeFinalReview } from "../src/runners/runClaudeFinalReview.js";
 import { runClaudeReview } from "../src/runners/runClaudeReview.js";
+import { finalResultSchema } from "../src/runners/reviewSchemas.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 
 const reviewJson = {
@@ -39,7 +40,8 @@ describe("review runners", () => {
           cwd: dir,
           diffPath: join(dir, "diff.patch"),
           statusPath: join(dir, "status.txt"),
-          reviewDir: join(dir, "review")
+          reviewDir: join(dir, "review"),
+          commandLogPath: join(dir, "meta", "command-log.jsonl")
         },
         executor
       );
@@ -47,7 +49,48 @@ describe("review runners", () => {
       expect(result.review.tasks[0]?.severity).toBe("major");
       expect(await readFile(result.markdownPath, "utf8")).toContain("Review complete");
       expect(await readFile(result.reviewJsonPath, "utf8")).toContain("Found one issue");
+      expect(await readFile(join(dir, "meta", "command-log.jsonl"), "utf8")).toContain('"event":"json_fallback"');
     });
+  });
+
+  it("rejects malformed Claude JSON files with a contextual error", async () => {
+    await withTempDir(async (dir) => {
+      const reviewDir = join(dir, "review");
+      const executor = makeExecutor(async () => {
+        await writeFile(join(reviewDir, "review.json"), "{", "utf8");
+        return execResult({ stdout: JSON.stringify(reviewJson), all: JSON.stringify(reviewJson) });
+      });
+
+      await expect(
+        runClaudeReview(
+          {
+            config: createDefaultConfig("demo"),
+            cwd: dir,
+            diffPath: "diff.patch",
+            statusPath: "status.txt",
+            reviewDir
+          },
+          executor
+        )
+      ).rejects.toThrow("Invalid Claude review JSON");
+    });
+  });
+
+  it("rejects empty remaining-issue objects", () => {
+    expect(
+      finalResultSchema.safeParse({
+        decision: "needs_changes",
+        remaining_issues: [{}],
+        reason: "more"
+      }).success
+    ).toBe(false);
+    expect(
+      finalResultSchema.safeParse({
+        decision: "needs_changes",
+        remaining_issues: [{ title: "Bug" }],
+        reason: "more"
+      }).success
+    ).toBe(true);
   });
 
   it("rejects invalid review severity", async () => {
