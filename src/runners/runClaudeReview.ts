@@ -4,7 +4,7 @@ import { resolveMainReviewerCommand, type Config } from "../config/schema.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { buildClaudeReviewPrompt } from "../prompts/buildClaudeReviewPrompt.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
-import { extractJsonObject, safeJsonParse } from "../utils/safeJsonParse.js";
+import { extractJsonObjectWithMetadata, safeJsonParse } from "../utils/safeJsonParse.js";
 import { reviewSchema, type ReviewJson } from "./reviewSchemas.js";
 
 export interface RunClaudeReviewInput {
@@ -78,22 +78,22 @@ async function readOrExtractReviewJson(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
+    const extracted = extractJsonObjectWithMetadata(output, (value) => reviewSchema.safeParse(value).success);
+    if (!extracted.ok) {
+      throw extracted.error;
+    }
+    parsed = extracted.value;
     if (commandLogPath) {
       const at = new Date().toISOString();
       await writeCommandLog(commandLogPath, {
         command: "claude-review-json-fallback",
         event: "json_fallback",
-        reason: `Expected JSON file was not written: ${path}`,
+        reason: `Expected JSON file was not written: ${path}; selected ${extracted.source} candidate ${extracted.candidateIndex}.`,
         started_at: at,
         ended_at: at,
         exit_code: 0
       });
     }
-    const extracted = extractJsonObject(output);
-    if (!extracted.ok) {
-      throw extracted.error;
-    }
-    parsed = extracted.value;
   }
 
   return reviewSchema.parse(parsed);

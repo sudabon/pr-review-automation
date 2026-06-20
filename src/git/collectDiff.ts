@@ -34,7 +34,7 @@ export async function collectDiff(
     commandLogPath: input.commandLogPath
   });
   if (statusResult.exitCode !== 0) {
-    throw new Error(`Failed to collect git status: ${statusResult.stderr}`);
+    throw new Error(`Failed to collect git status: ${formatFailure(statusResult)}`);
   }
 
   const range = input.targetBranch
@@ -49,7 +49,7 @@ export async function collectDiff(
     commandLogPath: input.commandLogPath
   });
   if (diffResult.exitCode !== 0) {
-    throw new Error(`Failed to collect git diff: ${diffResult.stderr}`);
+    throw new Error(`Failed to collect git diff: ${formatFailure(diffResult)}`);
   }
 
   const diff = diffResult.stdout.trim();
@@ -65,6 +65,10 @@ export async function collectDiff(
     isEmpty: diff.trim().length === 0,
     lineCount: countChangedLines(diff)
   };
+}
+
+function formatFailure(result: { stderr: string; all: string; exitCode: number }): string {
+  return result.stderr || result.all || `git exited with code ${result.exitCode}`;
 }
 
 function countChangedLines(diff: string): number {

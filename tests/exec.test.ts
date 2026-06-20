@@ -1,6 +1,8 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_GIT_TIMEOUT_MS, execWithTimeout } from "../src/utils/execWithTimeout.js";
-import { execResult, makeExecutor } from "./helpers.js";
+import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 
 describe("execWithTimeout", () => {
   it("returns an ExecResult for timeouts", async () => {
@@ -41,5 +43,48 @@ describe("execWithTimeout", () => {
     await execWithTimeout({ command: "git", args: ["status"] }, executor);
 
     expect(executor.calls[0]?.timeoutMs).toBe(DEFAULT_GIT_TIMEOUT_MS);
+  });
+
+  it("persists command output and timing metadata", async () => {
+    await withTempDir(async (dir) => {
+      const outputPath = join(dir, "output.log");
+      const commandLogPath = join(dir, "command-log.jsonl");
+
+      const result = await execWithTimeout({
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('artifact')"],
+        outputPath,
+        commandLogPath
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(await readFile(outputPath, "utf8")).toBe("artifact");
+      expect(JSON.parse(await readFile(commandLogPath, "utf8"))).toMatchObject({
+        exit_code: 0,
+        timed_out: false,
+        is_canceled: false,
+        duration_ms: expect.any(Number)
+      });
+    });
+  });
+
+  it("records termination signals in the command log", async () => {
+    await withTempDir(async (dir) => {
+      const commandLogPath = join(dir, "command-log.jsonl");
+
+      await execWithTimeout({
+        command: process.execPath,
+        args: ["-e", "process.kill(process.pid, 'SIGTERM')"],
+        commandLogPath
+      });
+
+      expect(JSON.parse(await readFile(commandLogPath, "utf8"))).toMatchObject({ signal: "SIGTERM" });
+    });
+  });
+
+  it("rejects the deprecated shell execution path instead of dropping args", async () => {
+    await expect(
+      execWithTimeout({ command: "printf", args: ["%s", "shell-args"], shell: true })
+    ).rejects.toThrow("Shell execution is not supported");
   });
 });

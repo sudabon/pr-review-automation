@@ -90,6 +90,19 @@ describe("loop control", () => {
       }).reason
     ).toContain("Validation timed out for: test");
 
+    expect(
+      shouldContinue({
+        ...validationFailureInput,
+        validationResult: {
+          ...validationFailureInput.validationResult,
+          steps: {
+            ...validationPassed.steps,
+            test: { status: "failed", exit_code: 1, signal: "SIGKILL" }
+          }
+        }
+      }).reason
+    ).toContain("test (SIGKILL)");
+
     config.limits.stop_on_validation_failure = false;
     expect(
       shouldContinue({
@@ -97,6 +110,29 @@ describe("loop control", () => {
         config
       })
     ).toMatchObject({ action: "continue", status: "needs_changes" });
+  });
+
+  it("stops after the configured number of consecutive test failures", () => {
+    const config = createDefaultConfig("demo");
+    config.limits.stop_on_validation_failure = false;
+    config.limits.test_failure_degradation_limit = 2;
+
+    const result = shouldContinue({
+      config,
+      loopNumber: 2,
+      maxLoops: 3,
+      finalResult: final("needs_changes", [{ severity: "major", title: "Bug" }]),
+      validationResult: {
+        ...validationPassed,
+        status: "failed",
+        steps: { ...validationPassed.steps, test: { status: "failed", exit_code: 1 } }
+      },
+      maxRepeatCount: 0,
+      consecutiveTestFailures: 2
+    });
+
+    expect(result).toMatchObject({ action: "stop", status: "human_review_required" });
+    expect(result.reason).toContain("2 consecutive loops");
   });
 
   it("stops on repeated issues, max loops, and human review", () => {
@@ -207,6 +243,65 @@ describe("loop control", () => {
           executor: makeExecutor(() => execResult())
         })
       ).rejects.toThrow("loop-state.json");
+    });
+  });
+
+  it("rejects traversal run IDs and resume worktree paths outside the repository", async () => {
+    await withTempDir(async (dir) => {
+      await expect(
+        runLoop({
+          cwd: dir,
+          config: createDefaultConfig("demo"),
+          options: {
+            baseBranch: "main",
+            maxLoops: 1,
+            commitOnSuccess: false,
+            dryRun: true,
+            onlyReview: false,
+            resumeRunId: "../../../outside"
+          },
+          executor: makeExecutor(() => execResult())
+        })
+      ).rejects.toThrow("Invalid run_id");
+
+      const runId = "unsafe-path";
+      const statePath = join(dir, ".ai-dev-loop", "runs", runId, "meta", "loop-state.json");
+      await mkdir(join(dir, ".ai-dev-loop", "runs", runId, "meta"), { recursive: true });
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          run_id: runId,
+          status: "failed",
+          current_loop: 1,
+          max_loops: 3,
+          worktree_path: "/tmp/outside-worktree",
+          worktree_mode: "worktree",
+          worktree_branch: "ai-dev-loop/unsafe-path",
+          remaining_issues: [],
+          repeated_issues: {},
+          failovers: [],
+          history: []
+        }),
+        "utf8"
+      );
+      const executor = makeExecutor(() => execResult());
+
+      await expect(
+        runLoop({
+          cwd: dir,
+          config: createDefaultConfig("demo"),
+          options: {
+            baseBranch: "main",
+            maxLoops: 3,
+            commitOnSuccess: false,
+            dryRun: true,
+            onlyReview: false,
+            resumeRunId: runId
+          },
+          executor
+        })
+      ).rejects.toThrow("worktree path must be inside");
+      expect(executor.calls).toHaveLength(0);
     });
   });
 
@@ -1033,7 +1128,7 @@ describe("loop control", () => {
           args === "branch --show-current" ? execResult({ exitCode: 1, stderr: "inspect failed" }) : execResult()
       },
       {
-        expected: "temporary branch ai-dev-loop/resume-error no longer exists",
+        expected: "temporary branch",
         handler: (args: string) => {
           if (args === "branch --show-current") return execResult({ stdout: "feature\n" });
           if (args.startsWith("show-ref --verify --quiet")) return execResult({ exitCode: 1 });
@@ -1041,11 +1136,11 @@ describe("loop control", () => {
         }
       },
       {
-        expected: "failed to switch to ai-dev-loop/resume-error",
+        expected: "failed to switch to",
         handler: (args: string) => {
           if (args === "branch --show-current") return execResult({ stdout: "feature\n" });
           if (args.startsWith("show-ref --verify --quiet")) return execResult();
-          if (args === "switch ai-dev-loop/resume-error") return execResult({ exitCode: 1, stderr: "locked" });
+          if (args.startsWith("switch ai-dev-loop/resume-error-")) return execResult({ exitCode: 1, stderr: "locked" });
           return execResult();
         }
       }
@@ -1065,7 +1160,7 @@ describe("loop control", () => {
             max_loops: 3,
             worktree_path: dir,
             worktree_mode: "branch",
-            worktree_branch: "ai-dev-loop/resume-error",
+            worktree_branch: `ai-dev-loop/${runId}`,
             remaining_issues: [],
             repeated_issues: {},
             failovers: [],

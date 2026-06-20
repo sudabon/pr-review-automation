@@ -76,6 +76,9 @@ export function buildProgram(cwd = process.cwd(), io: CliIo = {}, deps: CliDepen
       const runOptions = resolveRunOptions(config, options);
       const result = await runLoopImpl({ cwd, config, options: runOptions });
       stdout.write(`${result.status}: ${result.reason}\n`);
+      if (result.status !== "completed") {
+        throw new CommanderError(1, "ai-dev-loop.runFailed", result.reason);
+      }
     });
 
   return program;

@@ -14,6 +14,7 @@ export interface LoopDecisionInput {
   diffLineCount?: number;
   baselineDiffLineCount?: number;
   allFixersTokenLimited?: boolean;
+  consecutiveTestFailures?: number;
 }
 
 export type LoopDecision =
@@ -38,15 +39,30 @@ export type LoopDecision =
 
 export function shouldContinue(input: LoopDecisionInput): LoopDecision {
   if (input.validationResult.status === "failed" && input.config.limits.stop_on_validation_failure) {
+    const signaledSteps = Object.entries(input.validationResult.steps)
+      .filter(([, step]) => step.signal || step.is_canceled)
+      .map(([name, step]) => `${name}${step.signal ? ` (${step.signal})` : " (canceled)"}`);
     const timedOutSteps = Object.entries(input.validationResult.steps)
       .filter(([, step]) => step.timed_out)
       .map(([name]) => name);
     return {
       action: "stop",
       status: "human_review_required",
-      reason: timedOutSteps.length > 0
-        ? `Validation timed out for: ${timedOutSteps.join(", ")}. stop_on_validation_failure is enabled.`
-        : "Validation failed and stop_on_validation_failure is enabled.",
+      reason: signaledSteps.length > 0
+        ? `Validation was terminated for: ${signaledSteps.join(", ")}. stop_on_validation_failure is enabled.`
+        : timedOutSteps.length > 0
+          ? `Validation timed out for: ${timedOutSteps.join(", ")}. stop_on_validation_failure is enabled.`
+          : "Validation failed and stop_on_validation_failure is enabled.",
+      success: false
+    };
+  }
+
+  const degradationLimit = input.config.limits.test_failure_degradation_limit;
+  if (degradationLimit > 0 && (input.consecutiveTestFailures ?? 0) >= degradationLimit) {
+    return {
+      action: "stop",
+      status: "human_review_required",
+      reason: `Tests failed for ${input.consecutiveTestFailures} consecutive loops, reaching the configured degradation limit of ${degradationLimit}.`,
       success: false
     };
   }

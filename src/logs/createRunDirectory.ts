@@ -1,5 +1,7 @@
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
+
+const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 export interface RunDirectory {
   runId: string;
@@ -21,6 +23,7 @@ export function generateRunId(now = new Date()): string {
 }
 
 export async function createRunDirectory(cwd: string, runId = generateRunId()): Promise<RunDirectory> {
+  assertValidRunId(runId);
   const root = join(cwd, ".ai-dev-loop", "runs", runId);
   const dirs = {
     inputDir: join(root, "input"),
@@ -43,6 +46,7 @@ export async function createRunDirectory(cwd: string, runId = generateRunId()): 
 }
 
 export function getRunDirectory(cwd: string, runId: string): RunDirectory {
+  assertValidRunId(runId);
   const root = join(cwd, ".ai-dev-loop", "runs", runId);
   const inputDir = join(root, "input");
   const reviewDir = join(root, "review");
@@ -63,4 +67,17 @@ export function getRunDirectory(cwd: string, runId: string): RunDirectory {
     commandLogPath: join(metaDir, "command-log.jsonl"),
     loopStatePath: join(metaDir, "loop-state.json")
   };
+}
+
+export function assertValidRunId(runId: string): void {
+  if (!RUN_ID_PATTERN.test(runId) || runId === "." || runId === "..") {
+    throw new Error("Invalid run_id. Use only letters, numbers, dots, underscores, and hyphens.");
+  }
+
+  const runsRoot = resolve(".ai-dev-loop", "runs");
+  const candidate = resolve(runsRoot, runId);
+  const pathFromRoot = relative(runsRoot, candidate);
+  if (pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || pathFromRoot === "") {
+    throw new Error("Invalid run_id: resolved path must be inside .ai-dev-loop/runs.");
+  }
 }

@@ -13,7 +13,7 @@ export const commandsSchema = z
   })
   .prefault({});
 
-export const configSchema = z.strictObject({
+const configObjectSchema = z.strictObject({
   project: z
     .strictObject({
       name: z.string().min(1).default("ai-dev-loop-target"),
@@ -50,7 +50,7 @@ export const configSchema = z.strictObject({
       use_worktree: z.boolean().default(true),
       commit_on_success: z.boolean().default(true),
       create_pr_on_success: z.boolean().default(false),
-      pr_command: z.string().default("gh pr view --json number,title,url,headRefName,baseRefName"),
+      pr_command: z.string().default("gh pr create --fill"),
       worktree_dir: z.string().default(".ai-dev-loop/worktrees")
     })
     .prefault({}),
@@ -76,6 +76,27 @@ export const configSchema = z.strictObject({
     })
     .prefault({})
 });
+
+export const configSchema = z.preprocess((value) => {
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+
+  const input = value as Record<string, unknown>;
+  const project = input.project;
+  if (typeof project !== "object" || project === null || !("base_branch" in project)) {
+    return value;
+  }
+
+  const git = typeof input.git === "object" && input.git !== null ? (input.git as Record<string, unknown>) : {};
+  if ("base_branch" in git) {
+    return value;
+  }
+
+  // Retain project.base_branch as a backward-compatible alias. An explicit
+  // git.base_branch remains authoritative when both are present.
+  return { ...input, git: { ...git, base_branch: (project as Record<string, unknown>).base_branch } };
+}, configObjectSchema);
 
 export type Config = z.infer<typeof configSchema>;
 export type FixerName = z.infer<typeof fixerSchema>;

@@ -4,7 +4,7 @@ import { resolveMainReviewerCommand, type Config } from "../config/schema.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { buildClaudeFinalPrompt } from "../prompts/buildClaudeFinalPrompt.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
-import { extractJsonObject, safeJsonParse } from "../utils/safeJsonParse.js";
+import { extractJsonObjectWithMetadata, safeJsonParse } from "../utils/safeJsonParse.js";
 import { finalResultSchema, type FinalResult } from "./reviewSchemas.js";
 
 export interface RunClaudeFinalReviewInput {
@@ -83,23 +83,23 @@ async function readOrExtractFinalJson(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
-    if (commandLogPath) {
-      const at = new Date().toISOString();
-      await writeCommandLog(commandLogPath, {
-        command: "claude-final-review-json-fallback",
-        event: "json_fallback",
-        reason: `Expected JSON file was not written: ${path}`,
-        started_at: at,
-        ended_at: at,
-        exit_code: 0
-      });
-    }
-    const extracted = extractJsonObject(output);
+    const extracted = extractJsonObjectWithMetadata(output, (value) => finalResultSchema.safeParse(value).success);
     if (!extracted.ok) {
       throw extracted.error;
     }
     parsed = extracted.value;
     usedFallback = true;
+    if (commandLogPath) {
+      const at = new Date().toISOString();
+      await writeCommandLog(commandLogPath, {
+        command: "claude-final-review-json-fallback",
+        event: "json_fallback",
+        reason: `Expected JSON file was not written: ${path}; selected ${extracted.source} candidate ${extracted.candidateIndex}.`,
+        started_at: at,
+        ended_at: at,
+        exit_code: 0
+      });
+    }
   }
 
   const finalResult = finalResultSchema.parse(parsed);

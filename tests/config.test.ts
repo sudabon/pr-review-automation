@@ -115,4 +115,17 @@ describe("configuration", () => {
       await expect(loadConfig(dir)).rejects.toThrow("agents.token_limit_patterns.codex.0");
     });
   });
+
+  it("uses project.base_branch when git.base_branch is omitted", async () => {
+    await withTempDir(async (dir) => {
+      const configPath = join(dir, CONFIG_PATH);
+      await mkdir(dirname(configPath), { recursive: true });
+      await writeFile(configPath, "project:\n  base_branch: develop\n", "utf8");
+
+      const config = await loadConfig(dir);
+
+      expect(config.project.base_branch).toBe("develop");
+      expect(config.git.base_branch).toBe("develop");
+    });
+  });
 });

@@ -1,17 +1,20 @@
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import type { Config } from "../config/schema.js";
 import { PreflightError } from "./checks.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
 
-export interface WorktreeResult {
-  mode: "worktree" | "branch" | "current";
-  path: string;
-  branchName?: string;
-  originalBranch?: string;
-  originalRef?: string;
-}
+export type WorktreeResult =
+  | { mode: "current"; path: string }
+  | { mode: "worktree"; path: string; branchName: string }
+  | {
+      mode: "branch";
+      path: string;
+      branchName: string;
+      originalBranch?: string;
+      originalRef?: string;
+    };
 
 export interface CleanupWorktreeInput {
   cwd: string;
@@ -38,6 +41,12 @@ export async function createWorktree(
 
   const branchName = `ai-dev-loop/${runId}`;
   const worktreePath = join(cwd, config.git.worktree_dir, runId);
+  const repositoryRoot = resolve(cwd);
+  const resolvedWorktreePath = resolve(worktreePath);
+  const pathFromRepository = relative(repositoryRoot, resolvedWorktreePath);
+  if (pathFromRepository === "" || pathFromRepository === ".." || pathFromRepository.startsWith(`..${sep}`)) {
+    throw new PreflightError("git.worktree_dir must resolve inside the repository.");
+  }
   await mkdir(join(cwd, config.git.worktree_dir), { recursive: true });
 
   const addResult = await executor({

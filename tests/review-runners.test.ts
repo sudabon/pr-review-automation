@@ -5,7 +5,7 @@ import { createDefaultConfig } from "../src/config/schema.js";
 import { runClaudeFinalReview } from "../src/runners/runClaudeFinalReview.js";
 import { runClaudeReview } from "../src/runners/runClaudeReview.js";
 import { finalResultSchema } from "../src/runners/reviewSchemas.js";
-import { extractJsonObject } from "../src/utils/safeJsonParse.js";
+import { extractJsonObject, extractJsonObjectWithMetadata } from "../src/utils/safeJsonParse.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 
 const reviewJson = {
@@ -85,6 +85,23 @@ describe("review runners", () => {
     );
 
     expect(extracted).toEqual({ ok: true, value: reviewJson });
+  });
+
+  it("scans braces inside strings and selects only schema-compatible JSON", () => {
+    const extracted = extractJsonObjectWithMetadata(
+      `metadata {"unrelated":true}\nresult: ${JSON.stringify({
+        ...reviewJson,
+        summary: 'Handles {braces} and an escaped "quote"'
+      })}`,
+      (value) => typeof value === "object" && value !== null && "tasks" in value
+    );
+
+    expect(extracted).toMatchObject({
+      ok: true,
+      source: "scanned",
+      candidateIndex: 1,
+      value: { summary: 'Handles {braces} and an escaped "quote"' }
+    });
   });
 
   it("rejects empty remaining-issue objects", () => {

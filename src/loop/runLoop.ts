@@ -1,9 +1,10 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { fixerSchema, resolveMainReviewerCommand, type Config } from "../config/schema.js";
 import { collectDiff } from "../git/collectDiff.js";
 import { commitChanges } from "../git/commitChanges.js";
+import { createPullRequest } from "../git/createPullRequest.js";
 import { ensureGitRepository, ensureRequiredCliCommands } from "../git/checks.js";
 import { cleanupWorktree, createWorktree } from "../git/createWorktree.js";
 import { createRunDirectory, getRunDirectory, type RunDirectory } from "../logs/createRunDirectory.js";
@@ -67,6 +68,7 @@ const loopStateCommonShape = {
   baseline_diff_line_count: z.number().int().nonnegative().optional(),
   remaining_issues: z.array(remainingIssueSchema),
   repeated_issues: z.record(z.string(), z.number().int().nonnegative()),
+  consecutive_test_failures: z.number().int().nonnegative().default(0),
   failovers: z.array(
     z.strictObject({
       from: fixerSchema,
@@ -127,7 +129,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
     ? await loadExistingState(runDirectory)
     : await initializeRun(input, runDirectory, executor);
   if (input.options.resumeRunId) {
-    state = await prepareResumeWorktree(input.cwd, state, runDirectory.commandLogPath, executor);
+    state = await prepareResumeWorktree(input.cwd, input.config, state, runDirectory.commandLogPath, executor);
   }
   const worktreePath = state.worktree_path;
   const maxLoops = input.options.maxLoops;
@@ -312,6 +314,8 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
       );
 
       const repeated = detectRepeatedIssues(state.repeated_issues, final.finalResult.remaining_issues);
+      const consecutiveTestFailures =
+        validation.steps.test.status === "failed" ? state.consecutive_test_failures + 1 : 0;
       const allFixersTokenLimited =
         fix.attempts.length > 0 && fix.attempts.every((attempt) => attempt.status === "token_limited");
       const decision = shouldContinue({
@@ -323,7 +327,8 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         maxRepeatCount: repeated.maxRepeatCount,
         diffLineCount: refreshedDiff.lineCount,
         baselineDiffLineCount,
-        allFixersTokenLimited
+        allFixersTokenLimited,
+        consecutiveTestFailures
       });
 
       const nextState: LoopState = {
@@ -335,6 +340,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         final_decision: final.finalResult.decision,
         remaining_issues: final.finalResult.remaining_issues,
         repeated_issues: repeated.counts,
+        consecutive_test_failures: consecutiveTestFailures,
         failovers: [...state.failovers, ...toLoopStateFailovers(fix.failovers)],
         history: [
           ...state.history,
@@ -376,6 +382,23 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
                 history[history.length - 1] = { ...lastHistory, reason: resultReason };
               }
               await persistState({ ...nextState, reason: resultReason, history });
+            } else if (input.config.git.create_pr_on_success) {
+              try {
+                const pullRequest = await createPullRequest(
+                  {
+                    cwd: worktreePath,
+                    command: input.config.git.pr_command,
+                    metaDir: runDirectory.metaDir,
+                    commandLogPath: runDirectory.commandLogPath
+                  },
+                  executor
+                );
+                if (pullRequest.status !== "created") {
+                  console.warn(`[ai-dev-loop] pull request creation ${pullRequest.status}: ${pullRequest.reason}`);
+                }
+              } catch (error) {
+                console.warn(`[ai-dev-loop] pull request creation failed: ${formatErrorMessage(error)}`);
+              }
             }
           }
         }
@@ -462,6 +485,7 @@ async function initializeRun(
     max_loops: input.options.maxLoops,
     remaining_issues: [],
     repeated_issues: {},
+    consecutive_test_failures: 0,
     failovers: [],
     history: []
   };
@@ -473,13 +497,13 @@ async function initializeRun(
             ...commonState,
             worktree_path: worktree.path,
             worktree_mode: "worktree",
-            worktree_branch: worktree.branchName!
+            worktree_branch: worktree.branchName
           }
         : {
             ...commonState,
             worktree_path: worktree.path,
             worktree_mode: "branch",
-            worktree_branch: worktree.branchName!,
+            worktree_branch: worktree.branchName,
             worktree_original_branch: worktree.originalBranch,
             worktree_original_ref: worktree.originalRef
           };
@@ -511,12 +535,17 @@ async function loadExistingState(runDirectory: RunDirectory): Promise<LoopState>
     throw new Error(`Cannot resume ${runDirectory.runId}: invalid loop-state.json:\n${issues.join("\n")}`);
   }
 
+  if (validated.data.run_id !== runDirectory.runId) {
+    throw new Error(`Cannot resume ${runDirectory.runId}: loop-state.json run_id does not match the requested run.`);
+  }
+
   return validated.data;
 }
 
 async function saveLoopState(path: string, state: LoopState): Promise<void> {
+  const validated = loopStateSchema.parse(state);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(state, null, 2), "utf8");
+  await writeFile(path, JSON.stringify(validated, null, 2), "utf8");
 }
 
 async function cleanupLoopWorktree(
@@ -569,6 +598,7 @@ function isResumableStatus(status: LoopStateStatus): boolean {
 
 async function prepareResumeWorktree(
   cwd: string,
+  config: Config,
   state: LoopState,
   commandLogPath: string,
   executor: CommandExecutor
@@ -576,6 +606,8 @@ async function prepareResumeWorktree(
   if (["completed", "approved"].includes(state.status)) {
     throw new Error(`Cannot resume ${state.run_id}: the run is already complete.`);
   }
+
+  assertSafeWorktreePath(cwd, config.git.worktree_dir, state);
 
   try {
     await access(state.worktree_path);
@@ -629,6 +661,32 @@ async function prepareResumeWorktree(
     ...state,
     worktree_original_branch: state.worktree_original_branch ?? (currentBranchName || undefined)
   };
+}
+
+function assertSafeWorktreePath(cwd: string, configuredWorktreeDir: string, state: LoopState): void {
+  const repositoryRoot = resolve(cwd);
+  const statePath = resolve(state.worktree_path);
+  if (state.worktree_mode !== "current" && state.worktree_branch !== `ai-dev-loop/${state.run_id}`) {
+    throw new Error(`Cannot resume ${state.run_id}: temporary worktree branch does not match the run ID.`);
+  }
+
+  if (state.worktree_mode !== "worktree") {
+    if (statePath !== repositoryRoot) {
+      throw new Error(`Cannot resume ${state.run_id}: current/branch worktree path must match the repository root.`);
+    }
+    return;
+  }
+
+  const worktreesRoot = resolve(cwd, configuredWorktreeDir);
+  const configuredPath = relative(repositoryRoot, worktreesRoot);
+  if (configuredPath === "" || configuredPath === ".." || configuredPath.startsWith(`..${sep}`)) {
+    throw new Error(`Cannot resume ${state.run_id}: configured worktree directory must be inside the repository.`);
+  }
+
+  const stateRelativePath = relative(worktreesRoot, statePath);
+  if (stateRelativePath === "" || stateRelativePath === ".." || stateRelativePath.startsWith(`..${sep}`)) {
+    throw new Error(`Cannot resume ${state.run_id}: worktree path must be inside ${worktreesRoot}.`);
+  }
 }
 
 function formatErrorMessage(error: unknown): string {

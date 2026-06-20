@@ -11,6 +11,8 @@ export interface ValidationStepResult {
   exit_code: number | null;
   log_path?: string;
   timed_out?: boolean;
+  signal?: string;
+  is_canceled?: boolean;
   stderr?: string;
 }
 
@@ -74,10 +76,13 @@ export async function runValidation(
     });
 
     steps[name] = {
-      status: result.exitCode === 0 && !result.timedOut ? "passed" : "failed",
+      status:
+        result.exitCode === 0 && !result.timedOut && !result.signal && !result.isCanceled ? "passed" : "failed",
       exit_code: result.exitCode,
       log_path: logPath,
       timed_out: result.timedOut,
+      signal: result.signal,
+      is_canceled: result.isCanceled,
       stderr: result.stderr
     };
   }

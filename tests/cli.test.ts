@@ -82,4 +82,27 @@ describe("CLI", () => {
     );
     expect(output.join("")).toContain("unknown command");
   });
+
+  it("returns a non-zero commander error when the loop does not complete", async () => {
+    await withTempDir(async (dir) => {
+      const configPath = join(dir, CONFIG_PATH);
+      await mkdir(dirname(configPath), { recursive: true });
+      await writeFile(configPath, "project:\n  name: demo\n", "utf8");
+      const runLoopImpl = vi.fn().mockResolvedValue({
+        status: "failed",
+        reason: "validation failed",
+        runId: "run-1",
+        runDirectory: join(dir, ".ai-dev-loop", "runs", "run-1")
+      });
+
+      await expect(
+        runCli(
+          ["node", "ai-dev-loop", "run"],
+          dir,
+          { stdout: { write: () => true } },
+          { runLoopImpl }
+        )
+      ).rejects.toMatchObject({ exitCode: 1, code: "ai-dev-loop.runFailed" });
+    });
+  });
 });

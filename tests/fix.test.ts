@@ -288,7 +288,7 @@ describe("fix runners", () => {
     });
   });
 
-  it("does not report success when a fixer exits zero with a token-limit diagnostic", async () => {
+  it("does not misclassify a successful fixer that echoes token-limit text", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
       config.agents.fixers = ["codex"];
@@ -311,9 +311,8 @@ describe("fix runners", () => {
         executor
       );
 
-      expect(result.status).toBe("human_review_required");
-      expect(result.attempts[0]).toMatchObject({ status: "token_limited", changed: true });
-      expect(result.reason).toContain("automatic failover was stopped");
+      expect(result.status).toBe("completed");
+      expect(result.attempts[0]).toMatchObject({ status: "completed", changed: true });
     });
   });
 
@@ -369,12 +368,12 @@ describe("fix runners", () => {
     ).toBe(false);
   });
 
-  it("detects token-limit diagnostics emitted with a successful exit", () => {
+  it("ignores token-limit diagnostics emitted with a successful exit", () => {
     expect(
       detectTokenLimit({
         result: execResult({ exitCode: 0, stdout: "rate limit exceeded", stderr: "" })
       })
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("does not treat an unrelated 429 location as a token limit", () => {

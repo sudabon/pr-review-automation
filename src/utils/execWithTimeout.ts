@@ -8,6 +8,7 @@ export interface ExecWithTimeoutOptions {
   cwd?: string;
   timeoutMs?: number;
   input?: string;
+  /** @deprecated Shell execution is intentionally unsupported. */
   shell?: boolean;
   env?: NodeJS.ProcessEnv;
   outputPath?: string;
@@ -38,29 +39,22 @@ export function formatCommand(command: string, args: string[] = []): string {
 
 export const defaultExecutor: CommandExecutor = async (rawOptions) => {
   const options = withDefaultTimeout(rawOptions);
+  if (options.shell) {
+    throw new Error("Shell execution is not supported; pass the command and args separately.");
+  }
   const startedAtDate = new Date();
   const startedAt = startedAtDate.toISOString();
   const commandString = formatCommand(options.command, options.args);
 
   try {
-    const subprocess = options.shell
-      ? await execa(options.command, {
-          cwd: options.cwd,
-          env: options.env,
-          input: options.input,
-          reject: false,
-          shell: true,
-          timeout: options.timeoutMs,
-          all: true
-        })
-      : await execa(options.command, options.args ?? [], {
-          cwd: options.cwd,
-          env: options.env,
-          input: options.input,
-          reject: false,
-          timeout: options.timeoutMs,
-          all: true
-        });
+    const subprocess = await execa(options.command, options.args ?? [], {
+      cwd: options.cwd,
+      env: options.env,
+      input: options.input,
+      reject: false,
+      timeout: options.timeoutMs,
+      all: true
+    });
 
     const completed = subprocess as typeof subprocess & {
       failed?: boolean;

@@ -133,4 +133,25 @@ describe("validation runner", () => {
       expect(result.steps.lint.status).toBe("failed");
     });
   });
+
+  it("records signal and cancellation details for terminated validation", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      const executor = makeExecutor(() =>
+        execResult({ exitCode: 0, signal: "SIGKILL", isCanceled: true, stderr: "killed" })
+      );
+
+      const result = await runValidation(config, dir, join(dir, "validation"), undefined, executor);
+
+      expect(result.steps.lint).toMatchObject({
+        status: "failed",
+        signal: "SIGKILL",
+        is_canceled: true
+      });
+      expect(await readFile(join(dir, "validation", "validation-result.json"), "utf8")).toContain('"SIGKILL"');
+    });
+  });
 });

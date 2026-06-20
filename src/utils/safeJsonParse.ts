@@ -2,6 +2,10 @@ export type SafeJsonParseResult<T = unknown> =
   | { ok: true; value: T }
   | { ok: false; error: Error };
 
+export type JsonObjectExtractionResult =
+  | { ok: true; value: unknown; source: "direct" | "fenced" | "scanned"; candidateIndex: number }
+  | { ok: false; error: Error };
+
 export function safeJsonParse<T = unknown>(input: string): SafeJsonParseResult<T> {
   try {
     return { ok: true, value: JSON.parse(input) as T };
@@ -13,24 +17,37 @@ export function safeJsonParse<T = unknown>(input: string): SafeJsonParseResult<T
   }
 }
 
-export function extractJsonObject(input: string): SafeJsonParseResult<unknown> {
+export function extractJsonObject(
+  input: string,
+  accepts: (value: unknown) => boolean = () => true
+): SafeJsonParseResult<unknown> {
+  const extracted = extractJsonObjectWithMetadata(input, accepts);
+  return extracted.ok ? { ok: true, value: extracted.value } : extracted;
+}
+
+export function extractJsonObjectWithMetadata(
+  input: string,
+  accepts: (value: unknown) => boolean = () => true
+): JsonObjectExtractionResult {
   const direct = safeJsonParse(input.trim());
-  if (direct.ok) {
-    return direct;
+  if (direct.ok && accepts(direct.value)) {
+    return { ok: true, value: direct.value, source: "direct", candidateIndex: 0 };
   }
 
   const fencedBlocks = input.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi);
+  let fencedIndex = 0;
   for (const fenced of fencedBlocks) {
     const parsed = safeJsonParse(fenced[1]?.trim() ?? "");
-    if (parsed.ok) {
-      return parsed;
+    if (parsed.ok && accepts(parsed.value)) {
+      return { ok: true, value: parsed.value, source: "fenced", candidateIndex: fencedIndex };
     }
+    fencedIndex += 1;
   }
 
-  for (const candidate of findJsonObjectCandidates(input)) {
+  for (const [candidateIndex, candidate] of findJsonObjectCandidates(input).entries()) {
     const parsed = safeJsonParse(candidate);
-    if (parsed.ok) {
-      return parsed;
+    if (parsed.ok && accepts(parsed.value)) {
+      return { ok: true, value: parsed.value, source: "scanned", candidateIndex };
     }
   }
 
