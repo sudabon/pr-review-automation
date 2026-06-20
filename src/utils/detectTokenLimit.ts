@@ -27,16 +27,18 @@ export function detectTokenLimit(input: DetectTokenLimitInput): boolean {
 }
 
 export function detectTokenLimitPattern(input: DetectTokenLimitInput): string | undefined {
-  if (input.result.exitCode === 0) {
-    return undefined;
-  }
-
   const configured =
     input.fixer && input.config
       ? input.config.agents.token_limit_patterns[input.fixer] ?? []
       : [];
   const patterns = [...DEFAULT_TOKEN_LIMIT_PATTERNS, ...configured, ...(input.patterns ?? [])];
-  const haystack = [input.result.stdout, input.result.stderr, input.result.all]
+  // Failed CLIs can echo the prompt to stdout/all. Only trust stderr for non-zero
+  // exits so review text cannot downgrade a crash into a token-limit failover.
+  const outputs =
+    input.result.exitCode === 0
+      ? [input.result.stderr, input.result.stdout]
+      : [input.result.stderr];
+  const haystack = outputs
     .map((output) => output.trim().slice(-4_000))
     .filter(Boolean)
     .join("\n")

@@ -18,7 +18,7 @@ export interface FixRunnerInput {
 
 export interface FixRunnerResult {
   fixer: "codex" | "cursor";
-  status: "completed" | "failed" | "token_limited";
+  status: "completed" | "failed" | "token_limited" | "no_changes";
   promptPath: string;
   outputPath: string;
   execResult: ExecResult;
@@ -73,7 +73,10 @@ export async function runCodexFix(
   }
 
   const requiresChanges = input.review.tasks.length > 0;
-  const completed = execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && changed;
+  const completed =
+    execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && changed && !tokenLimitPattern;
+  const noChanges =
+    execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && !changed && !tokenLimitPattern;
   const failureReason = tokenLimitFailure
     ? tokenLimitFailure
     : !requiresChanges
@@ -83,7 +86,7 @@ export async function runCodexFix(
         : undefined;
   return {
     fixer: "codex",
-    status: completed ? "completed" : tokenLimitPattern ? "token_limited" : "failed",
+    status: tokenLimitPattern ? "token_limited" : completed ? "completed" : noChanges ? "no_changes" : "failed",
     promptPath,
     outputPath,
     execResult,

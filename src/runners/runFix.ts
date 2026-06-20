@@ -26,7 +26,7 @@ export interface RunFixInput {
 }
 
 export interface RunFixResult {
-  status: "completed" | "skipped" | "human_review_required";
+  status: "completed" | "skipped" | "human_review_required" | "no_changes";
   activeFixer?: FixerName;
   outputPaths: string[];
   attempts: FixRunnerResult[];
@@ -91,6 +91,17 @@ export async function runFix(
         outputPaths: attempts.map((item) => item.outputPath),
         attempts,
         failovers
+      };
+    }
+
+    if (attempt.status === "no_changes") {
+      return {
+        status: "no_changes",
+        activeFixer: fixer,
+        outputPaths: attempts.map((item) => item.outputPath),
+        attempts,
+        failovers,
+        reason: attempt.failureReason
       };
     }
 

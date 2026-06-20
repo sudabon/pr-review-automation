@@ -156,25 +156,28 @@ describe("fix runners", () => {
     });
   });
 
-  it("rejects a successful fixer that makes no working-tree changes", async () => {
+  it("returns no_changes when a successful fixer makes no working-tree changes", async () => {
     await withTempDir(async (dir) => {
       const executor = makeExecutor((options) =>
         options.command === "git" ? execResult() : execResult({ stdout: "nothing to apply" })
       );
 
-      await expect(
-        runFix(
-          {
-            config: createDefaultConfig("demo"),
-            cwd: dir,
-            fixDir: join(dir, "fix"),
-            review,
-            reviewJsonPath: "review.json",
-            dryRun: false
-          },
-          executor
-        )
-      ).rejects.toThrow("made no working-tree changes");
+      const result = await runFix(
+        {
+          config: createDefaultConfig("demo"),
+          cwd: dir,
+          fixDir: join(dir, "fix"),
+          review,
+          reviewJsonPath: "review.json",
+          dryRun: false
+        },
+        executor
+      );
+
+      expect(result).toMatchObject({
+        status: "no_changes",
+        reason: expect.stringContaining("made no working-tree changes")
+      });
     });
   });
 
@@ -281,6 +284,34 @@ describe("fix runners", () => {
     });
   });
 
+  it("does not report success when a fixer exits zero with a token-limit diagnostic", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixers = ["codex"];
+      let status = "";
+      const executor = makeExecutor((options) => {
+        if (options.command === "git") return execResult({ stdout: status });
+        status = " M src/a.ts\n";
+        return execResult({ exitCode: 0, stdout: "rate limit exceeded", all: "rate limit exceeded" });
+      });
+
+      const result = await runFix(
+        {
+          config,
+          cwd: dir,
+          fixDir: join(dir, "fix"),
+          review,
+          reviewJsonPath: "review.json",
+          dryRun: false
+        },
+        executor
+      );
+
+      expect(result.status).toBe("human_review_required");
+      expect(result.attempts[0]).toMatchObject({ status: "token_limited", changed: true });
+    });
+  });
+
   it("detects configured token-limit patterns", () => {
     const config = createDefaultConfig("demo");
     config.agents.token_limit_patterns.codex = ["custom token stop"];
@@ -293,10 +324,18 @@ describe("fix runners", () => {
     ).toBe(true);
   });
 
-  it("detects a token-limit message emitted only on stdout", () => {
+  it("does not trust token-limit text from stdout after a failed exit", () => {
     expect(
       detectTokenLimit({
         result: execResult({ exitCode: 1, stdout: "quota exceeded", stderr: "" })
+      })
+    ).toBe(false);
+  });
+
+  it("detects token-limit diagnostics emitted with a successful exit", () => {
+    expect(
+      detectTokenLimit({
+        result: execResult({ exitCode: 0, stdout: "rate limit exceeded", stderr: "" })
       })
     ).toBe(true);
   });
@@ -313,13 +352,7 @@ describe("fix runners", () => {
     ).toBe(false);
   });
 
-  it("does not classify a successful exit or an old stderr prefix as a token limit", () => {
-    expect(
-      detectTokenLimit({
-        result: execResult({ exitCode: 0, stderr: "quota exceeded" })
-      })
-    ).toBe(false);
-
+  it("ignores token-limit text outside the inspected output tail", () => {
     expect(
       detectTokenLimit({
         result: execResult({ exitCode: 1, stderr: `quota exceeded${"x".repeat(4_100)}` })

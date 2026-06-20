@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createDefaultConfig } from "../src/config/schema.js";
 import { detectRepeatedIssues } from "../src/loop/detectRepeatedIssues.js";
-import { runLoop } from "../src/loop/runLoop.js";
+import { getRequiredCliCommands, runLoop } from "../src/loop/runLoop.js";
 import { shouldContinue } from "../src/loop/shouldContinue.js";
 import type { FinalResult } from "../src/runners/reviewSchemas.js";
 import type { ValidationResult } from "../src/runners/runValidation.js";
@@ -25,6 +25,21 @@ function final(decision: FinalResult["decision"], remaining_issues = [], reason 
 }
 
 describe("loop control", () => {
+  it("does not require fixer CLIs for dry-run or review-only runs", () => {
+    const config = createDefaultConfig("demo");
+    const options = {
+      baseBranch: "main",
+      maxLoops: 1,
+      commitOnSuccess: false,
+      dryRun: false,
+      onlyReview: false
+    };
+
+    expect(getRequiredCliCommands(config, options)).toEqual(["claude", "codex", "agent"]);
+    expect(getRequiredCliCommands(config, { ...options, dryRun: true })).toEqual(["claude"]);
+    expect(getRequiredCliCommands(config, { ...options, onlyReview: true })).toEqual(["claude"]);
+  });
+
   it("stops on approval and honors stop_on_validation_failure", () => {
     const config = createDefaultConfig("demo");
     expect(
@@ -862,6 +877,137 @@ describe("loop control", () => {
     });
   });
 
+  it("resumes and cleans up a legacy branch-mode run with persisted special actions", async () => {
+    await withTempDir(async (dir) => {
+      const runId = "branch-resume-run";
+      const statePath = join(dir, ".ai-dev-loop", "runs", runId, "meta", "loop-state.json");
+      await mkdir(join(dir, ".ai-dev-loop", "runs", runId, "meta"), { recursive: true });
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          run_id: runId,
+          status: "failed",
+          current_loop: 1,
+          max_loops: 3,
+          worktree_path: dir,
+          worktree_mode: "branch",
+          worktree_branch: "ai-dev-loop/branch-resume-run",
+          worktree_original_branch: "feature",
+          remaining_issues: [],
+          repeated_issues: {},
+          failovers: [],
+          history: [
+            { loop: 0, action: "only_review" },
+            { loop: 1, action: "dry_run" }
+          ]
+        }),
+        "utf8"
+      );
+      const executor = makeExecutor((options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (args === "branch --show-current") return execResult({ stdout: "feature\n" });
+        if (args.startsWith("show-ref --verify --quiet")) return execResult();
+        if (args === "switch ai-dev-loop/branch-resume-run") return execResult();
+        if (args === "status --short --branch") return execResult({ stdout: "## ai-dev-loop/branch-resume-run\n" });
+        if (args === "diff --binary --merge-base main") return execResult({ stdout: "" });
+        if (args === "switch feature") return execResult();
+        if (args === "branch -D ai-dev-loop/branch-resume-run") return execResult();
+        throw new Error(`Unexpected command: ${options.command} ${args}`);
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config: createDefaultConfig("demo"),
+        options: {
+          baseBranch: "main",
+          maxLoops: 3,
+          commitOnSuccess: false,
+          dryRun: false,
+          onlyReview: false,
+          resumeRunId: runId
+        },
+        executor
+      });
+
+      expect(result.status).toBe("completed");
+      expect(executor.calls.some((call) => call.args?.join(" ") === "switch ai-dev-loop/branch-resume-run")).toBe(
+        true
+      );
+      expect(executor.calls.some((call) => call.args?.join(" ") === "branch -D ai-dev-loop/branch-resume-run")).toBe(
+        true
+      );
+    });
+  });
+
+  it("rejects unsafe branch-mode resume states before running the loop", async () => {
+    const scenarios = [
+      {
+        expected: "failed to inspect the current branch",
+        handler: (args: string) =>
+          args === "branch --show-current" ? execResult({ exitCode: 1, stderr: "inspect failed" }) : execResult()
+      },
+      {
+        expected: "temporary branch ai-dev-loop/resume-error no longer exists",
+        handler: (args: string) => {
+          if (args === "branch --show-current") return execResult({ stdout: "feature\n" });
+          if (args.startsWith("show-ref --verify --quiet")) return execResult({ exitCode: 1 });
+          return execResult();
+        }
+      },
+      {
+        expected: "failed to switch to ai-dev-loop/resume-error",
+        handler: (args: string) => {
+          if (args === "branch --show-current") return execResult({ stdout: "feature\n" });
+          if (args.startsWith("show-ref --verify --quiet")) return execResult();
+          if (args === "switch ai-dev-loop/resume-error") return execResult({ exitCode: 1, stderr: "locked" });
+          return execResult();
+        }
+      }
+    ];
+
+    for (const [index, scenario] of scenarios.entries()) {
+      await withTempDir(async (dir) => {
+        const runId = `resume-error-${index}`;
+        const statePath = join(dir, ".ai-dev-loop", "runs", runId, "meta", "loop-state.json");
+        await mkdir(join(dir, ".ai-dev-loop", "runs", runId, "meta"), { recursive: true });
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            run_id: runId,
+            status: "failed",
+            current_loop: 1,
+            max_loops: 3,
+            worktree_path: dir,
+            worktree_mode: "branch",
+            worktree_branch: "ai-dev-loop/resume-error",
+            remaining_issues: [],
+            repeated_issues: {},
+            failovers: [],
+            history: []
+          }),
+          "utf8"
+        );
+        const executor = makeExecutor((options) => scenario.handler(options.args?.join(" ") ?? ""));
+
+        await expect(
+          runLoop({
+            cwd: dir,
+            config: createDefaultConfig("demo"),
+            options: {
+              baseBranch: "main",
+              maxLoops: 3,
+              commitOnSuccess: false,
+              dryRun: false,
+              onlyReview: false,
+              resumeRunId: runId
+            },
+            executor
+          })
+        ).rejects.toThrow(scenario.expected);
+      });
+    }
+  });
+
   it("commits approved fixes only when both commit gates are enabled", async () => {
     const scenarios = [
       { option: true, config: true, expected: true },
@@ -950,5 +1096,72 @@ describe("loop control", () => {
         );
       });
     }
+  });
+
+  it("continues after a no-change fixer and reports when approval creates no commit", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.git.use_worktree = false;
+      config.commands.lint = "";
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      const patch = ["diff --git a/file.ts b/file.ts", "@@ -1 +1 @@", "-old", "+new"].join("\n");
+      const executor = makeExecutor((options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (args === "rev-parse --is-inside-work-tree") return execResult({ stdout: "true" });
+        if (args === "rev-parse --show-toplevel") return execResult({ stdout: dir });
+        if (options.args?.[0] === "--version") return execResult({ stdout: "1.0.0" });
+        if (args === "status --short --branch") return execResult({ stdout: "## feature\n" });
+        if (args === "status --porcelain") return execResult({ stdout: "" });
+        if (args === "diff --binary --merge-base main") return execResult({ stdout: patch });
+        if (args === "diff --binary HEAD") return execResult({ stdout: "snapshot" });
+        if (options.command === "codex") return execResult({ stdout: "nothing to change" });
+        if (options.command === "claude") {
+          const prompt = options.input ?? "";
+          const output = prompt.includes("Perform the final review")
+            ? { decision: "approved", remaining_issues: [], reason: "clean" }
+            : {
+                summary: "review",
+                overall_risk: "medium",
+                tasks: [
+                  {
+                    id: "R1",
+                    severity: "major",
+                    category: "bug",
+                    title: "Check bug",
+                    description: "Check bug",
+                    files: ["file.ts"],
+                    suggested_fix: "Fix if needed",
+                    acceptance_criteria: ["reviewed"]
+                  }
+                ]
+              };
+          return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
+        }
+        throw new Error(`Unexpected command: ${options.command} ${args}`);
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: {
+          baseBranch: "main",
+          maxLoops: 1,
+          commitOnSuccess: true,
+          dryRun: false,
+          onlyReview: false
+        },
+        executor
+      });
+
+      expect(result).toMatchObject({
+        status: "completed",
+        reason: expect.stringContaining("No commit was created because the working tree was clean")
+      });
+      expect(executor.calls.some((call) => call.args?.[0] === "commit")).toBe(false);
+      const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
+      expect(state.reason).toContain("No commit was created");
+    });
   });
 });

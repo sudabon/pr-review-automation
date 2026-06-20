@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Config } from "../config/schema.js";
+import { PreflightError } from "./checks.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
 
@@ -50,63 +51,26 @@ export async function createWorktree(
     return { mode: "worktree", path: worktreePath, branchName };
   }
 
-  const fallbackReason = addResult.stderr || addResult.all || `git exited with code ${addResult.exitCode}`;
-  const warning = `git worktree add failed; falling back to a temporary branch in the current working tree: ${fallbackReason}`;
-  console.warn(`[ai-dev-loop] ${warning}`);
+  const failureReason = addResult.stderr || addResult.all || `git exited with code ${addResult.exitCode}`;
+  const reason = `git worktree add failed; refusing to modify the current working tree: ${failureReason}`;
   if (commandLogPath) {
     try {
       const at = new Date().toISOString();
       await writeCommandLog(commandLogPath, {
-        command: "git worktree fallback",
-        event: "worktree_fallback",
-        reason: warning,
+        command: "git worktree add",
+        event: "worktree_creation_failed",
+        reason,
         started_at: at,
         ended_at: at,
         exit_code: addResult.exitCode
       });
     } catch (error) {
       console.warn(
-        `[ai-dev-loop] failed to record worktree fallback: ${error instanceof Error ? error.message : String(error)}`
+        `[ai-dev-loop] failed to record worktree creation failure: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
-
-  const originalBranchResult = await executor({
-    command: "git",
-    args: ["branch", "--show-current"],
-    cwd,
-    commandLogPath
-  });
-  const originalRefResult = await executor({
-    command: "git",
-    args: ["rev-parse", "HEAD"],
-    cwd,
-    commandLogPath
-  });
-  if (originalBranchResult.exitCode !== 0 || originalRefResult.exitCode !== 0) {
-    throw new Error(
-      `Failed to record the original checkout before creating a temporary branch: ${originalBranchResult.stderr || originalRefResult.stderr}`
-    );
-  }
-
-  const branchResult = await executor({
-    command: "git",
-    args: ["switch", "-c", branchName],
-    cwd,
-    commandLogPath
-  });
-
-  if (branchResult.exitCode !== 0) {
-    throw new Error(`Failed to create worktree or temporary branch: ${branchResult.stderr || addResult.stderr}`);
-  }
-
-  return {
-    mode: "branch",
-    path: cwd,
-    branchName,
-    originalBranch: originalBranchResult.stdout.trim() || undefined,
-    originalRef: originalRefResult.stdout.trim() || undefined
-  };
+  throw new PreflightError(reason);
 }
 
 export async function cleanupWorktree(
@@ -135,6 +99,10 @@ export async function cleanupWorktree(
     if (restore.exitCode !== 0) {
       throw new Error(`Failed to restore the original checkout: ${restore.stderr || restore.all}`);
     }
+
+    if (input.branchName) {
+      await deleteTemporaryBranch(input.cwd, input.branchName, input.commandLogPath, executor);
+    }
     return;
   }
 
@@ -156,13 +124,22 @@ export async function cleanupWorktree(
     return;
   }
 
+  await deleteTemporaryBranch(input.cwd, input.branchName, input.commandLogPath, executor);
+}
+
+async function deleteTemporaryBranch(
+  cwd: string,
+  branchName: string,
+  commandLogPath: string | undefined,
+  executor: CommandExecutor
+): Promise<void> {
   const deleteBranch = await executor({
     command: "git",
-    args: ["branch", "-D", input.branchName],
-    cwd: input.cwd,
-    commandLogPath: input.commandLogPath
+    args: ["branch", "-D", branchName],
+    cwd,
+    commandLogPath
   });
   if (deleteBranch.exitCode !== 0) {
-    throw new Error(`Failed to delete temporary branch ${input.branchName}: ${deleteBranch.stderr || deleteBranch.all}`);
+    throw new Error(`Failed to delete temporary branch ${branchName}: ${deleteBranch.stderr || deleteBranch.all}`);
   }
 }

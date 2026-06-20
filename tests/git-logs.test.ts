@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ensureGitRepository, PreflightError } from "../src/git/checks.js";
+import { ensureGitRepository, ensureRequiredCliCommands, PreflightError } from "../src/git/checks.js";
 import { collectDiff } from "../src/git/collectDiff.js";
 import { commitChanges } from "../src/git/commitChanges.js";
 import { createRunDirectory } from "../src/logs/createRunDirectory.js";
@@ -12,6 +12,17 @@ describe("git and logs", () => {
   it("rejects non-Git directories", async () => {
     const executor = makeExecutor(() => execResult({ stdout: "false", exitCode: 1 }));
     await expect(ensureGitRepository("/tmp/not-git", executor)).rejects.toThrow(PreflightError);
+  });
+
+  it("checks each required CLI once and reports missing commands", async () => {
+    const executor = makeExecutor((options) =>
+      options.command === "missing" ? execResult({ exitCode: 1 }) : execResult({ stdout: "1.0.0" })
+    );
+
+    await expect(ensureRequiredCliCommands(["claude", "claude", "missing"], "/repo", executor)).rejects.toThrow(
+      "Required CLI is not available: missing"
+    );
+    expect(executor.calls.map((call) => call.command)).toEqual(["claude", "missing"]);
   });
 
   it("creates the run directory tree and appends command logs", async () => {
@@ -80,6 +91,29 @@ describe("git and logs", () => {
       );
 
       expect(result.lineCount).toBe(3);
+    });
+  });
+
+  it("collects one merge-base diff so staged changes are not double-counted", async () => {
+    await withTempDir(async (dir) => {
+      const patch = [
+        "diff --git a/a.ts b/a.ts",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new"
+      ].join("\n");
+      const executor = makeExecutor((options) =>
+        options.args?.[0] === "status" ? execResult({ stdout: "## feature\n M a.ts\n" }) : execResult({ stdout: patch })
+      );
+
+      const result = await collectDiff(
+        { cwd: dir, baseBranch: "main", inputDir: join(dir, "input") },
+        executor
+      );
+
+      expect(result.lineCount).toBe(2);
+      expect(executor.calls.filter((call) => call.args?.[0] === "diff")).toHaveLength(1);
+      expect(executor.calls.at(-1)?.args).toEqual(["diff", "--binary", "--merge-base", "main"]);
     });
   });
 

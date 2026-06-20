@@ -5,17 +5,17 @@ import { fixerSchema, type Config } from "../config/schema.js";
 import { collectDiff } from "../git/collectDiff.js";
 import { commitChanges } from "../git/commitChanges.js";
 import { ensureGitRepository, ensureRequiredCliCommands } from "../git/checks.js";
-import { cleanupWorktree, createWorktree, type WorktreeResult } from "../git/createWorktree.js";
+import { cleanupWorktree, createWorktree } from "../git/createWorktree.js";
 import { createRunDirectory, getRunDirectory, type RunDirectory } from "../logs/createRunDirectory.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { runClaudeFinalReview } from "../runners/runClaudeFinalReview.js";
 import { runClaudeReview } from "../runners/runClaudeReview.js";
 import { runFix, type FixFailover } from "../runners/runFix.js";
-import { runValidation, type ValidationResult } from "../runners/runValidation.js";
-import { remainingIssueSchema, type FinalResult, type RemainingIssue } from "../runners/reviewSchemas.js";
+import { runValidation } from "../runners/runValidation.js";
+import { remainingIssueSchema } from "../runners/reviewSchemas.js";
 import { safeJsonParse } from "../utils/safeJsonParse.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
-import { detectRepeatedIssues, type RepeatedIssueCounts } from "./detectRepeatedIssues.js";
+import { detectRepeatedIssues } from "./detectRepeatedIssues.js";
 import { shouldContinue, type LoopDecision } from "./shouldContinue.js";
 
 export interface RunLoopOptions {
@@ -33,42 +33,6 @@ export interface RunLoopInput {
   config: Config;
   options: RunLoopOptions;
   executor?: CommandExecutor;
-}
-
-export type LoopStateStatus =
-  | "running"
-  | "completed"
-  | "failed"
-  | "approved"
-  | "needs_changes"
-  | "human_review_required"
-  | "max_loops"
-  | "repeated_issue"
-  | "abnormal_diff";
-
-export interface LoopState {
-  run_id: string;
-  status: LoopStateStatus;
-  reason?: string;
-  current_loop: number;
-  max_loops: number;
-  worktree_path: string;
-  worktree_mode?: WorktreeResult["mode"];
-  worktree_branch?: string;
-  worktree_original_branch?: string;
-  worktree_original_ref?: string;
-  final_decision?: FinalResult["decision"];
-  baseline_diff_line_count?: number;
-  remaining_issues: RemainingIssue[];
-  repeated_issues: RepeatedIssueCounts;
-  failovers: FixFailover[];
-  history: Array<{
-    loop: number;
-    decision?: FinalResult["decision"];
-    validation?: ValidationResult["status"];
-    action?: LoopDecision["action"] | "only_review" | "dry_run";
-    reason?: string;
-  }>;
 }
 
 export interface RunLoopResult {
@@ -90,6 +54,8 @@ const loopStateStatusSchema = z.enum([
   "repeated_issue",
   "abnormal_diff"
 ]);
+
+export type LoopStateStatus = z.infer<typeof loopStateStatusSchema>;
 
 const loopStateSchema = z
   .object({
@@ -130,6 +96,8 @@ const loopStateSchema = z
     )
   })
   .passthrough();
+
+export type LoopState = z.infer<typeof loopStateSchema>;
 
 export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
   const executor = input.executor ?? execWithTimeout;
@@ -263,7 +231,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
           status: "human_review_required",
           reason: fix.reason,
           current_loop: loopNumber,
-          failovers: [...state.failovers, ...fix.failovers],
+          failovers: [...state.failovers, ...toLoopStateFailovers(fix.failovers)],
           history: [...state.history, { loop: loopNumber, action: "stop", reason: fix.reason }]
         };
         await persistState(nextState);
@@ -330,7 +298,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         final_decision: final.finalResult.decision,
         remaining_issues: final.finalResult.remaining_issues,
         repeated_issues: repeated.counts,
-        failovers: [...state.failovers, ...fix.failovers],
+        failovers: [...state.failovers, ...toLoopStateFailovers(fix.failovers)],
         history: [
           ...state.history,
           {
@@ -345,20 +313,30 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
       await persistState(nextState);
 
       if (decision.action === "stop") {
+        let resultReason = decision.reason;
         if (decision.success && input.options.commitOnSuccess && input.config.git.commit_on_success) {
-          await commitChanges(
+          const commit = await commitChanges(
             {
               cwd: worktreePath,
               commandLogPath: runDirectory.commandLogPath
             },
             executor
           );
+          if (!commit.committed) {
+            resultReason = `${decision.reason} No commit was created because the working tree was clean.`;
+            const history = [...nextState.history];
+            const lastHistory = history.at(-1);
+            if (lastHistory) {
+              history[history.length - 1] = { ...lastHistory, reason: resultReason };
+            }
+            await persistState({ ...nextState, reason: resultReason, history });
+          }
         }
 
         return {
           status:
             decision.success ? "completed" : decision.status === "human_review_required" ? "needs_human_review" : "failed",
-          reason: decision.reason,
+          reason: resultReason,
           runId: runDirectory.runId,
           runDirectory: runDirectory.root,
           decision
@@ -473,7 +451,7 @@ async function loadExistingState(runDirectory: RunDirectory): Promise<LoopState>
     throw new Error(`Cannot resume ${runDirectory.runId}: invalid loop-state.json:\n${issues.join("\n")}`);
   }
 
-  return validated.data as LoopState;
+  return validated.data;
 }
 
 async function saveLoopState(path: string, state: LoopState): Promise<void> {
@@ -588,4 +566,8 @@ async function prepareResumeWorktree(
 
 function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function toLoopStateFailovers(failovers: FixFailover[]): LoopState["failovers"] {
+  return failovers.map((failover) => ({ ...failover }));
 }

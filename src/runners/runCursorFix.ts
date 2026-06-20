@@ -65,7 +65,10 @@ export async function runCursorFix(
   }
 
   const requiresChanges = input.review.tasks.length > 0;
-  const completed = execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && changed;
+  const completed =
+    execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && changed && !tokenLimitPattern;
+  const noChanges =
+    execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && !changed && !tokenLimitPattern;
   const failureReason = tokenLimitFailure
     ? tokenLimitFailure
     : !requiresChanges
@@ -75,7 +78,7 @@ export async function runCursorFix(
         : undefined;
   return {
     fixer: "cursor",
-    status: completed ? "completed" : tokenLimitPattern ? "token_limited" : "failed",
+    status: tokenLimitPattern ? "token_limited" : completed ? "completed" : noChanges ? "no_changes" : "failed",
     promptPath,
     outputPath,
     execResult,

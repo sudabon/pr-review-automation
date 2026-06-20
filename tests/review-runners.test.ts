@@ -143,10 +143,32 @@ describe("review runners", () => {
     });
   });
 
+  it("reports Claude review timeouts explicitly", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor(() =>
+        execResult({ exitCode: 124, timedOut: true, stderr: "deadline exceeded", all: "deadline exceeded" })
+      );
+
+      await expect(
+        runClaudeReview(
+          {
+            config: createDefaultConfig("demo"),
+            cwd: dir,
+            diffPath: "diff.patch",
+            statusPath: "status.txt",
+            reviewDir: join(dir, "review")
+          },
+          executor
+        )
+      ).rejects.toThrow("Claude review failed by timeout");
+    });
+  });
+
   it("runs Claude final review and validates the decision JSON", async () => {
     await withTempDir(async (dir) => {
       const finalJson = { decision: "approved", remaining_issues: [], reason: "clean" };
       const executor = makeExecutor(() => execResult({ stdout: JSON.stringify(finalJson), all: JSON.stringify(finalJson) }));
+      const commandLogPath = join(dir, "meta", "command-log.jsonl");
 
       const result = await runClaudeFinalReview(
         {
@@ -156,13 +178,65 @@ describe("review runners", () => {
           validationResultPath: "validation.json",
           diffPath: "diff.patch",
           finalDir: join(dir, "final"),
-          fixLogPaths: []
+          fixLogPaths: [],
+          commandLogPath
         },
         executor
       );
 
       expect(result.finalResult.decision).toBe("approved");
       expect(await readFile(result.finalResultPath, "utf8")).toContain("approved");
+      expect(await readFile(commandLogPath, "utf8")).toContain('"event":"json_fallback"');
+    });
+  });
+
+  it("treats Claude final-review failures and timeouts as errors", async () => {
+    await withTempDir(async (dir) => {
+      for (const timedOut of [false, true]) {
+        const executor = makeExecutor(() =>
+          execResult({ exitCode: timedOut ? 124 : 1, timedOut, stderr: "boom", all: "boom" })
+        );
+
+        await expect(
+          runClaudeFinalReview(
+            {
+              config: createDefaultConfig("demo"),
+              cwd: dir,
+              initialReviewPath: "review.md",
+              validationResultPath: "validation.json",
+              diffPath: "diff.patch",
+              finalDir: join(dir, timedOut ? "final-timeout" : "final-failure"),
+              fixLogPaths: []
+            },
+            executor
+          )
+        ).rejects.toThrow(timedOut ? "Claude final review failed by timeout" : "Claude final review failed");
+      }
+    });
+  });
+
+  it("rejects malformed Claude final-review JSON files with a contextual error", async () => {
+    await withTempDir(async (dir) => {
+      const finalDir = join(dir, "final");
+      const executor = makeExecutor(async () => {
+        await writeFile(join(finalDir, "final-result.json"), "{", "utf8");
+        return execResult({ all: '{"decision":"approved","remaining_issues":[],"reason":"clean"}' });
+      });
+
+      await expect(
+        runClaudeFinalReview(
+          {
+            config: createDefaultConfig("demo"),
+            cwd: dir,
+            initialReviewPath: "review.md",
+            validationResultPath: "validation.json",
+            diffPath: "diff.patch",
+            finalDir,
+            fixLogPaths: []
+          },
+          executor
+        )
+      ).rejects.toThrow("Invalid Claude final-review JSON");
     });
   });
 });

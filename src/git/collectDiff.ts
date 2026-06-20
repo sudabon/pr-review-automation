@@ -42,7 +42,9 @@ export async function collectDiff(
     : `${input.baseBranch}...HEAD`;
   const diffResult = await executor({
     command: "git",
-    args: ["diff", "--binary", range],
+    args: input.targetBranch
+      ? ["diff", "--binary", range]
+      : ["diff", "--binary", "--merge-base", input.baseBranch],
     cwd: input.cwd,
     commandLogPath: input.commandLogPath
   });
@@ -50,19 +52,7 @@ export async function collectDiff(
     throw new Error(`Failed to collect git diff: ${diffResult.stderr}`);
   }
 
-  const staged = input.targetBranch
-    ? ""
-    : await collectOptionalDiff(["diff", "--binary", "--cached"], input.cwd, input.commandLogPath, executor);
-  const unstaged = input.targetBranch
-    ? ""
-    : await collectOptionalDiff(["diff", "--binary"], input.cwd, input.commandLogPath, executor);
-
-  const sections = [
-    diffResult.stdout.trim(),
-    staged.trim() ? `\n# Staged changes\n${staged.trim()}` : "",
-    unstaged.trim() ? `\n# Unstaged changes\n${unstaged.trim()}` : ""
-  ].filter(Boolean);
-  const diff = sections.join("\n");
+  const diff = diffResult.stdout.trim();
 
   await writeFile(diffPath, diff, "utf8");
   await writeFile(statusPath, statusResult.stdout, "utf8");
@@ -96,22 +86,4 @@ function countChangedLines(diff: string): number {
   }
 
   return count;
-}
-
-async function collectOptionalDiff(
-  args: string[],
-  cwd: string,
-  commandLogPath: string | undefined,
-  executor: CommandExecutor
-): Promise<string> {
-  const result = await executor({
-    command: "git",
-    args,
-    cwd,
-    commandLogPath
-  });
-  if (result.exitCode !== 0) {
-    throw new Error(`Failed to collect git diff: ${result.stderr}`);
-  }
-  return result.stdout;
 }

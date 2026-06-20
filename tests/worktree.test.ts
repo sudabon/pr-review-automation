@@ -1,53 +1,29 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createDefaultConfig } from "../src/config/schema.js";
+import { PreflightError } from "../src/git/checks.js";
 import { cleanupWorktree, createWorktree } from "../src/git/createWorktree.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 
 describe("worktree lifecycle", () => {
-  it("restores the original branch after the temporary-branch fallback", async () => {
+  it("stops without changing the current checkout when worktree creation fails", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
-      const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const commandLogPath = join(dir, "meta", "command-log.jsonl");
       const executor = makeExecutor((options) => {
         const args = options.args?.join(" ") ?? "";
         if (args.startsWith("worktree add")) {
           return execResult({ exitCode: 1, stderr: "worktree unavailable" });
         }
-        if (args === "branch --show-current") {
-          return execResult({ stdout: "feature\n" });
-        }
-        if (args === "rev-parse HEAD") {
-          return execResult({ stdout: "abc123\n" });
-        }
-        return execResult();
+        throw new Error(`Unexpected command: ${args}`);
       });
 
-      const worktree = await createWorktree(dir, config, "run-1", undefined, commandLogPath, executor);
-      expect(worktree).toMatchObject({
-        mode: "branch",
-        originalBranch: "feature",
-        originalRef: "abc123"
-      });
-
-      await cleanupWorktree(
-        {
-          cwd: dir,
-          mode: worktree.mode,
-          path: worktree.path,
-          branchName: worktree.branchName,
-          originalBranch: worktree.originalBranch,
-          originalRef: worktree.originalRef
-        },
-        executor
+      await expect(createWorktree(dir, config, "run-1", undefined, commandLogPath, executor)).rejects.toThrow(
+        PreflightError
       );
-
-      expect(executor.calls.some((call) => call.args?.join(" ") === "switch feature")).toBe(true);
-      expect(warning).toHaveBeenCalledWith(expect.stringContaining("worktree add failed"));
-      expect(await readFile(commandLogPath, "utf8")).toContain('"event":"worktree_fallback"');
-      warning.mockRestore();
+      expect(executor.calls).toHaveLength(1);
+      expect(await readFile(commandLogPath, "utf8")).toContain('"event":"worktree_creation_failed"');
     });
   });
 
@@ -114,39 +90,23 @@ describe("worktree lifecycle", () => {
     expect(executor.calls).toHaveLength(0);
   });
 
-  it("throws when the original checkout cannot be recorded", async () => {
-    await withTempDir(async (dir) => {
-      const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-      const executor = makeExecutor((options) => {
-        const args = options.args?.join(" ");
-        if (args?.startsWith("worktree add")) return execResult({ exitCode: 1, stderr: "unavailable" });
-        if (args === "branch --show-current") return execResult({ exitCode: 1, stderr: "branch failed" });
-        return execResult({ stdout: "abc123" });
-      });
+  it("restores and deletes a legacy fallback branch", async () => {
+    const executor = makeExecutor(() => execResult());
+    await cleanupWorktree(
+      {
+        cwd: "/repo",
+        mode: "branch",
+        path: "/repo",
+        branchName: "ai-dev-loop/run-1",
+        originalBranch: "feature"
+      },
+      executor
+    );
 
-      await expect(createWorktree(dir, createDefaultConfig("demo"), "run-1", undefined, undefined, executor)).rejects.toThrow(
-        "Failed to record the original checkout"
-      );
-      warning.mockRestore();
-    });
-  });
-
-  it("throws when the fallback branch cannot be created", async () => {
-    await withTempDir(async (dir) => {
-      const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-      const executor = makeExecutor((options) => {
-        const args = options.args?.join(" ");
-        if (args?.startsWith("worktree add")) return execResult({ exitCode: 1, stderr: "unavailable" });
-        if (args === "branch --show-current") return execResult({ stdout: "feature" });
-        if (args === "rev-parse HEAD") return execResult({ stdout: "abc123" });
-        return execResult({ exitCode: 1, stderr: "switch failed" });
-      });
-
-      await expect(createWorktree(dir, createDefaultConfig("demo"), "run-1", undefined, undefined, executor)).rejects.toThrow(
-        "Failed to create worktree or temporary branch"
-      );
-      warning.mockRestore();
-    });
+    expect(executor.calls.map((call) => call.args?.join(" "))).toEqual([
+      "switch feature",
+      "branch -D ai-dev-loop/run-1"
+    ]);
   });
 
   it("throws when restoring the original checkout fails", async () => {
