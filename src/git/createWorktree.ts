@@ -40,6 +40,10 @@ export async function createWorktree(
   }
 
   const branchName = `ai-dev-loop/${runId}`;
+  if (config.git.worktree_mode === "branch") {
+    return createTemporaryBranch(cwd, branchName, targetBranch, commandLogPath, executor);
+  }
+
   const worktreePath = join(cwd, config.git.worktree_dir, runId);
   const repositoryRoot = resolve(cwd);
   const resolvedWorktreePath = resolve(worktreePath);
@@ -80,6 +84,66 @@ export async function createWorktree(
     }
   }
   throw new PreflightError(reason);
+}
+
+async function createTemporaryBranch(
+  cwd: string,
+  branchName: string,
+  targetBranch: string | undefined,
+  commandLogPath: string | undefined,
+  executor: CommandExecutor
+): Promise<WorktreeResult> {
+  const status = await executor({
+    command: "git",
+    args: ["status", "--porcelain"],
+    cwd,
+    commandLogPath
+  });
+  if (status.exitCode !== 0) {
+    throw new PreflightError(`Failed to inspect the current working tree: ${status.stderr || status.all}`);
+  }
+  if (status.stdout.trim()) {
+    throw new PreflightError("git.worktree_mode=branch requires a clean working tree.");
+  }
+
+  const currentBranch = await executor({
+    command: "git",
+    args: ["branch", "--show-current"],
+    cwd,
+    commandLogPath
+  });
+  if (currentBranch.exitCode !== 0) {
+    throw new PreflightError(`Failed to inspect the current branch: ${currentBranch.stderr || currentBranch.all}`);
+  }
+
+  const currentRef = await executor({
+    command: "git",
+    args: ["rev-parse", "HEAD"],
+    cwd,
+    commandLogPath
+  });
+  if (currentRef.exitCode !== 0 || !currentRef.stdout.trim()) {
+    throw new PreflightError(`Failed to resolve HEAD: ${currentRef.stderr || currentRef.all}`);
+  }
+
+  const switched = await executor({
+    command: "git",
+    args: ["switch", "-c", branchName, targetBranch ?? "HEAD"],
+    cwd,
+    commandLogPath
+  });
+  if (switched.exitCode !== 0) {
+    throw new PreflightError(`Failed to create temporary branch ${branchName}: ${switched.stderr || switched.all}`);
+  }
+
+  const originalBranch = currentBranch.stdout.trim() || undefined;
+  return {
+    mode: "branch",
+    path: cwd,
+    branchName,
+    originalBranch,
+    originalRef: originalBranch ? undefined : currentRef.stdout.trim()
+  };
 }
 
 export async function cleanupWorktree(

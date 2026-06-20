@@ -32,6 +32,14 @@ async function writeRequestedFinalResult(prompt: string, value: unknown): Promis
   await writeFile(match[1], JSON.stringify(value), "utf8");
 }
 
+async function writeRequestedReviewResult(prompt: string, value: unknown): Promise<void> {
+  const match = /^Write a structured JSON task file to (.+)\. The JSON must be an object with:$/m.exec(prompt);
+  if (!match?.[1]) {
+    throw new Error("Initial-review prompt did not include an output path");
+  }
+  await writeFile(match[1], JSON.stringify(value), "utf8");
+}
+
 describe("loop control", () => {
   it("does not require fixer CLIs for dry-run or review-only runs", () => {
     const config = createDefaultConfig("demo");
@@ -110,6 +118,20 @@ describe("loop control", () => {
         config
       })
     ).toMatchObject({ action: "continue", status: "needs_changes" });
+
+    expect(
+      shouldContinue({
+        ...validationFailureInput,
+        config,
+        validationResult: {
+          ...validationFailureInput.validationResult,
+          steps: {
+            ...validationPassed.steps,
+            test: { status: "failed", exit_code: 1, signal: "SIGKILL", is_canceled: true }
+          }
+        }
+      })
+    ).toMatchObject({ action: "stop", status: "human_review_required", reason: expect.stringContaining("SIGKILL") });
   });
 
   it("stops after the configured number of consecutive test failures", () => {
@@ -401,6 +423,12 @@ describe("loop control", () => {
         if (options.command === "git" && options.args?.[0] === "diff") {
           return execResult({ stdout: "" });
         }
+        if (options.args?.join(" ") === "rev-parse --verify main^{commit}") {
+          return execResult({ stdout: "base-commit\n" });
+        }
+        if (options.args?.join(" ") === "rev-parse --verify HEAD^{commit}") {
+          return execResult({ stdout: "target-commit\n" });
+        }
         return execResult();
       });
 
@@ -425,6 +453,34 @@ describe("loop control", () => {
     });
   });
 
+  it("fails instead of approving an empty diff when base and target are the same commit", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.git.use_worktree = false;
+      const executor = makeExecutor((options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (args === "rev-parse --is-inside-work-tree") return execResult({ stdout: "true" });
+        if (args === "rev-parse --show-toplevel") return execResult({ stdout: dir });
+        if (options.args?.[0] === "--version") return execResult({ stdout: "1.0.0" });
+        if (args === "status --short --branch") return execResult({ stdout: "## main\n" });
+        if (args === "diff --binary --merge-base main") return execResult({ stdout: "" });
+        if (args.startsWith("rev-parse --verify ")) return execResult({ stdout: "same-commit\n" });
+        throw new Error(`Unexpected command: ${options.command} ${args}`);
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: { baseBranch: "main", maxLoops: 1, commitOnSuccess: false, dryRun: true, onlyReview: false },
+        executor
+      });
+
+      expect(result).toMatchObject({ status: "failed", reason: expect.stringContaining("same commit") });
+      const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
+      expect(state).toMatchObject({ status: "failed", reason: expect.stringContaining("same commit") });
+    });
+  });
+
   it("cleans an approved worktree and its temporary branch", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
@@ -432,11 +488,13 @@ describe("loop control", () => {
       config.commands.typecheck = "";
       config.commands.test = "";
       config.commands.build = "";
+      config.git.create_pr_on_success = true;
       let status = "";
       const executor = makeExecutor(async (options) => {
         const args = options.args?.join(" ") ?? "";
         if (options.command === "git" && args === "rev-parse --is-inside-work-tree") return execResult({ stdout: "true" });
         if (options.command === "git" && args === "rev-parse --show-toplevel") return execResult({ stdout: dir });
+        if (options.command === "git" && args === "rev-parse HEAD") return execResult({ stdout: "commit-sha\n" });
         if (options.args?.[0] === "--version") return execResult({ stdout: "1.0.0" });
         if (options.command === "git" && options.args?.[0] === "worktree") return execResult();
         if (options.command === "git" && args === "status --porcelain") return execResult({ stdout: status });
@@ -477,7 +535,7 @@ describe("loop control", () => {
       const result = await runLoop({
         cwd: dir,
         config,
-        options: { baseBranch: "main", maxLoops: 1, commitOnSuccess: false, dryRun: false, onlyReview: false },
+        options: { baseBranch: "main", maxLoops: 1, commitOnSuccess: true, dryRun: false, onlyReview: false },
         executor
       });
 
@@ -486,6 +544,91 @@ describe("loop control", () => {
         true
       );
       expect(executor.calls.some((call) => call.args?.slice(0, 2).join(" ") === "branch -D")).toBe(true);
+      expect(executor.calls.some((call) => call.args?.[0] === "commit")).toBe(true);
+      expect(executor.calls.some((call) => call.command === "gh" && call.args?.slice(0, 2).join(" ") === "pr create")).toBe(
+        true
+      );
+      expect(await readFile(join(result.runDirectory, "meta", "pr-result.json"), "utf8")).toContain('"status": "created"');
+    });
+  });
+
+  it("returns non-success and preserves the worktree when PR creation fails after commit", async () => {
+    await withTempDir(async (dir) => {
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const config = createDefaultConfig("demo");
+      config.git.create_pr_on_success = true;
+      config.commands.lint = "";
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      let status = "";
+      const executor = makeExecutor(async (options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (options.command === "git" && args === "rev-parse --is-inside-work-tree") return execResult({ stdout: "true" });
+        if (options.command === "git" && args === "rev-parse --show-toplevel") return execResult({ stdout: dir });
+        if (options.command === "git" && args === "rev-parse HEAD") return execResult({ stdout: "commit-sha\n" });
+        if (options.args?.[0] === "--version") return execResult({ stdout: "1.0.0" });
+        if (options.command === "git" && options.args?.[0] === "worktree") return execResult();
+        if (options.command === "git" && args === "status --porcelain") return execResult({ stdout: status });
+        if (options.command === "git" && options.args?.[0] === "status") return execResult({ stdout: "## feature\n" });
+        if (options.command === "git" && options.args?.[0] === "diff") {
+          return execResult({ stdout: "diff --git a/file.ts b/file.ts\n@@ -1 +1 @@\n-old\n+new\n" });
+        }
+        if (options.command === "codex") {
+          status = " M file.ts\n";
+          return execResult({ stdout: "fixed" });
+        }
+        if (options.command === "claude") {
+          const isFinalReview = options.input?.includes("Perform the final review") ?? false;
+          const output = isFinalReview
+            ? { decision: "approved", remaining_issues: [], reason: "clean" }
+            : {
+                summary: "review",
+                overall_risk: "medium",
+                tasks: [
+                  {
+                    id: "R1",
+                    severity: "major",
+                    category: "bug",
+                    title: "Bug",
+                    description: "Bug",
+                    files: ["file.ts"],
+                    suggested_fix: "Fix",
+                    acceptance_criteria: ["fixed"]
+                  }
+                ]
+              };
+          if (isFinalReview) await writeRequestedFinalResult(options.input ?? "", output);
+          return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
+        }
+        if (options.command === "gh" && args === "auth status") return execResult();
+        if (options.command === "gh" && args.startsWith("pr create")) {
+          return execResult({ exitCode: 1, stderr: "network unavailable" });
+        }
+        return execResult();
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: { baseBranch: "main", maxLoops: 1, commitOnSuccess: true, dryRun: false, onlyReview: false },
+        executor
+      });
+
+      expect(result).toMatchObject({
+        status: "needs_human_review",
+        reason: expect.stringContaining("network unavailable")
+      });
+      expect(executor.calls.some((call) => call.args?.[0] === "commit")).toBe(true);
+      expect(executor.calls.some((call) => call.args?.slice(0, 3).join(" ") === "worktree remove --force")).toBe(false);
+      const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
+      expect(state).toMatchObject({
+        status: "human_review_required",
+        reason: expect.stringContaining("network unavailable")
+      });
+      expect(state.history.at(-1)?.reason).toContain("network unavailable");
+      expect(await readFile(join(result.runDirectory, "meta", "pr-result.json"), "utf8")).toContain('"status": "failed"');
+      warning.mockRestore();
     });
   });
 
@@ -494,7 +637,7 @@ describe("loop control", () => {
       const config = createDefaultConfig("demo");
       config.git.use_worktree = false;
       const reviewJson = { summary: "reviewed", overall_risk: "low", tasks: [] };
-      const executor = makeExecutor((options) => {
+      const executor = makeExecutor(async (options) => {
         const args = options.args?.join(" ") ?? "";
         if (options.command === "git" && args === "rev-parse --is-inside-work-tree") return execResult({ stdout: "true" });
         if (options.command === "git" && args === "rev-parse --show-toplevel") return execResult({ stdout: dir });
@@ -503,7 +646,10 @@ describe("loop control", () => {
         if (options.command === "git" && options.args?.[0] === "diff") {
           return execResult({ stdout: "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n" });
         }
-        if (options.command === "claude") return execResult({ stdout: JSON.stringify(reviewJson), all: JSON.stringify(reviewJson) });
+        if (options.command === "claude") {
+          await writeRequestedReviewResult(options.input ?? "", reviewJson);
+          return execResult({ stdout: "Review complete", all: "Review complete" });
+        }
         throw new Error(`Unexpected command: ${options.command} ${args}`);
       });
 
@@ -522,6 +668,45 @@ describe("loop control", () => {
     });
   });
 
+  it("requires human review when an empty initial review comes only from stdout fallback", async () => {
+    await withTempDir(async (dir) => {
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const config = createDefaultConfig("demo");
+      config.git.use_worktree = false;
+      const reviewJson = { summary: "reviewed", overall_risk: "low", tasks: [] };
+      const executor = makeExecutor((options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (args === "rev-parse --is-inside-work-tree") return execResult({ stdout: "true" });
+        if (args === "rev-parse --show-toplevel") return execResult({ stdout: dir });
+        if (options.args?.[0] === "--version") return execResult({ stdout: "1.0.0" });
+        if (args === "status --short --branch") return execResult({ stdout: "## feature\n" });
+        if (options.args?.[0] === "diff") {
+          return execResult({ stdout: "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n" });
+        }
+        if (options.command === "claude") {
+          return execResult({ stdout: JSON.stringify(reviewJson), all: JSON.stringify(reviewJson) });
+        }
+        throw new Error(`Unexpected command: ${options.command} ${args}`);
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: { baseBranch: "main", maxLoops: 1, commitOnSuccess: false, dryRun: false, onlyReview: true },
+        executor
+      });
+
+      expect(result).toMatchObject({
+        status: "needs_human_review",
+        reason: expect.stringContaining("stdout JSON fallback")
+      });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("stdout JSON fallback"));
+      const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
+      expect(state.status).toBe("human_review_required");
+      warning.mockRestore();
+    });
+  });
+
   it("logs cleanup failures without replacing the loop result", async () => {
     await withTempDir(async (dir) => {
       const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -535,6 +720,8 @@ describe("loop control", () => {
         if (args.startsWith("worktree remove")) return execResult({ exitCode: 1, stderr: "remove failed" });
         if (options.args?.[0] === "status") return execResult({ stdout: "## feature\n" });
         if (options.args?.[0] === "diff") return execResult({ stdout: "" });
+        if (args === "rev-parse --verify main^{commit}") return execResult({ stdout: "base-commit\n" });
+        if (args === "rev-parse --verify HEAD^{commit}") return execResult({ stdout: "target-commit\n" });
         return execResult();
       });
 
@@ -1091,6 +1278,8 @@ describe("loop control", () => {
         if (args === "switch ai-dev-loop/branch-resume-run") return execResult();
         if (args === "status --short --branch") return execResult({ stdout: "## ai-dev-loop/branch-resume-run\n" });
         if (args === "diff --binary --merge-base main") return execResult({ stdout: "" });
+        if (args === "rev-parse --verify main^{commit}") return execResult({ stdout: "base-commit\n" });
+        if (args === "rev-parse --verify HEAD^{commit}") return execResult({ stdout: "target-commit\n" });
         if (args === "switch feature") return execResult();
         if (args === "branch -D ai-dev-loop/branch-resume-run") return execResult();
         throw new Error(`Unexpected command: ${options.command} ${args}`);

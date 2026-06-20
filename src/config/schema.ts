@@ -48,6 +48,7 @@ const configObjectSchema = z.strictObject({
       base_branch: z.string().min(1).default("main"),
       target_branch: z.string().min(1).optional(),
       use_worktree: z.boolean().default(true),
+      worktree_mode: z.enum(["worktree", "branch"]).default("worktree"),
       commit_on_success: z.boolean().default(true),
       create_pr_on_success: z.boolean().default(false),
       pr_command: z.string().default("gh pr create --fill"),
@@ -98,7 +99,12 @@ export const configSchema = z.preprocess((value) => {
   return { ...input, git: { ...git, base_branch: (project as Record<string, unknown>).base_branch } };
 }, configObjectSchema);
 
-export type Config = z.infer<typeof configSchema>;
+type ParsedConfig = z.infer<typeof configSchema>;
+export type Config = Omit<ParsedConfig, "git"> & {
+  git: Omit<ParsedConfig["git"], "worktree_mode"> & {
+    worktree_mode?: ParsedConfig["git"]["worktree_mode"];
+  };
+};
 export type FixerName = z.infer<typeof fixerSchema>;
 
 export function resolveMainReviewerCommand(config: Config): string {

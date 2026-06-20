@@ -76,6 +76,14 @@ Disable success commits:
 pnpm cli run --no-commit
 ```
 
+To create a pull request after a successful automatic commit, set
+`git.create_pr_on_success: true`. The configured `git.pr_command` must begin
+with `gh pr create`; the default is `gh pr create --fill`. PR creation results
+are recorded, and a creation failure stops the run for human follow-up.
+
+To use a temporary branch in the current checkout instead of a linked worktree,
+set `git.worktree_mode: branch`. This mode requires a clean working tree.
+
 ## Artifacts
 
 Each run writes files under `.ai-dev-loop/runs/<run_id>/`:
@@ -92,6 +100,7 @@ Each run writes files under `.ai-dev-loop/runs/<run_id>/`:
 - `final/final-result.json`
 - `meta/command-log.jsonl`
 - `meta/loop-state.json`
+- `meta/pr-result.json` when automatic PR creation is enabled
 
 ## Verification
 

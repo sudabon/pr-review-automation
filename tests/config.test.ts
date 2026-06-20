@@ -30,6 +30,7 @@ describe("configuration", () => {
       expect(config.limits.max_loops).toBe(3);
       expect(config.limits.max_same_issue_repeats).toBe(2);
       expect(config.git.use_worktree).toBe(true);
+      expect(config.git.worktree_mode).toBe("worktree");
       expect(config.git.commit_on_success).toBe(true);
       expect(config.git.create_pr_on_success).toBe(false);
       expect(config.agents.fixers).toEqual(["cursor"]);

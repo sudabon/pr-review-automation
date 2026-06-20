@@ -156,6 +156,32 @@ describe("fix runners", () => {
     });
   });
 
+  it("preserves the termination signal in Codex failure details", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixers = ["codex"];
+      const executor = makeExecutor((options) =>
+        options.command === "git"
+          ? execResult()
+          : execResult({ exitCode: 1, signal: "SIGKILL", isCanceled: true, stderr: "killed" })
+      );
+
+      await expect(
+        runFix(
+          {
+            config,
+            cwd: dir,
+            fixDir: join(dir, "fix"),
+            review,
+            reviewJsonPath: "review.json",
+            dryRun: false
+          },
+          executor
+        )
+      ).rejects.toThrow("terminated by SIGKILL");
+    });
+  });
+
   it("fails over on no_changes and returns it only after the final fixer", async () => {
     await withTempDir(async (dir) => {
       const executor = makeExecutor((options) =>
@@ -360,12 +386,25 @@ describe("fix runners", () => {
     ).toBe(true);
   });
 
-  it("does not trust token-limit text from stdout after a failed exit", () => {
+  it("ignores broad token-limit prose from stdout after a failed exit", () => {
     expect(
       detectTokenLimit({
         result: execResult({ exitCode: 1, stdout: "quota exceeded", stderr: "" })
       })
     ).toBe(false);
+  });
+
+  it("detects narrow rate-limit diagnostics from stdout after a failed exit", () => {
+    expect(
+      detectTokenLimit({
+        result: execResult({ exitCode: 1, stdout: "API error: rate_limit_exceeded", stderr: "" })
+      })
+    ).toBe(true);
+    expect(
+      detectTokenLimit({
+        result: execResult({ exitCode: 1, stdout: "Request failed with HTTP 429", stderr: "" })
+      })
+    ).toBe(true);
   });
 
   it("ignores token-limit diagnostics emitted with a successful exit", () => {

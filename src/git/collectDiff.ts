@@ -16,6 +16,7 @@ export interface DiffResult {
   diff: string;
   status: string;
   isEmpty: boolean;
+  isSameCommit?: boolean;
   lineCount: number;
 }
 
@@ -53,6 +54,12 @@ export async function collectDiff(
   }
 
   const diff = diffResult.stdout.trim();
+  let isSameCommit = false;
+  if (diff.length === 0) {
+    const baseCommit = await resolveCommit(input.baseBranch, input, executor);
+    const targetCommit = await resolveCommit(input.targetBranch ?? "HEAD", input, executor);
+    isSameCommit = baseCommit === targetCommit;
+  }
 
   await writeFile(diffPath, diff, "utf8");
   await writeFile(statusPath, statusResult.stdout, "utf8");
@@ -63,8 +70,26 @@ export async function collectDiff(
     diff,
     status: statusResult.stdout,
     isEmpty: diff.trim().length === 0,
+    isSameCommit,
     lineCount: countChangedLines(diff)
   };
+}
+
+async function resolveCommit(
+  ref: string,
+  input: CollectDiffInput,
+  executor: CommandExecutor
+): Promise<string> {
+  const result = await executor({
+    command: "git",
+    args: ["rev-parse", "--verify", `${ref}^{commit}`],
+    cwd: input.cwd,
+    commandLogPath: input.commandLogPath
+  });
+  if (result.exitCode !== 0 || !result.stdout.trim()) {
+    throw new Error(`Failed to resolve git ref ${ref}: ${formatFailure(result)}`);
+  }
+  return result.stdout.trim();
 }
 
 function formatFailure(result: { stderr: string; all: string; exitCode: number }): string {

@@ -55,6 +55,38 @@ describe("worktree lifecycle", () => {
     });
   });
 
+  it("creates a temporary branch when branch mode is explicitly configured", async () => {
+    const config = createDefaultConfig("demo");
+    config.git.worktree_mode = "branch";
+    const executor = makeExecutor((options) => {
+      const args = options.args?.join(" ");
+      if (args === "status --porcelain") return execResult({ stdout: "" });
+      if (args === "branch --show-current") return execResult({ stdout: "feature\n" });
+      if (args === "rev-parse HEAD") return execResult({ stdout: "abc123\n" });
+      if (args === "switch -c ai-dev-loop/run-1 target") return execResult();
+      throw new Error(`Unexpected command: ${args}`);
+    });
+
+    await expect(createWorktree("/repo", config, "run-1", "target", undefined, executor)).resolves.toEqual({
+      mode: "branch",
+      path: "/repo",
+      branchName: "ai-dev-loop/run-1",
+      originalBranch: "feature",
+      originalRef: undefined
+    });
+  });
+
+  it("refuses branch mode when the current working tree is dirty", async () => {
+    const config = createDefaultConfig("demo");
+    config.git.worktree_mode = "branch";
+    const executor = makeExecutor(() => execResult({ stdout: " M file.ts\n" }));
+
+    await expect(createWorktree("/repo", config, "run-1", undefined, undefined, executor)).rejects.toThrow(
+      "requires a clean working tree"
+    );
+    expect(executor.calls).toHaveLength(1);
+  });
+
   it("keeps a worktree that is needed for resume", async () => {
     await withTempDir(async (dir) => {
       const executor = makeExecutor(() => execResult());

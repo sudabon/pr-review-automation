@@ -36,25 +36,31 @@ export function detectTokenLimitPattern(input: DetectTokenLimitInput): string | 
       ? input.config.agents.token_limit_patterns[input.fixer] ?? []
       : [];
   const patterns = [...DEFAULT_TOKEN_LIMIT_PATTERNS, ...configured, ...(input.patterns ?? [])];
-  // Failed CLIs can echo the prompt to stdout/all. Only trust stderr so review
-  // text cannot downgrade a crash or a successful run into token-limit failover.
-  const outputs = [input.result.stderr];
-  const haystack = outputs
-    .map((output) => output.trim().slice(-4_000))
-    .filter(Boolean)
-    .join("\n")
-    .toLowerCase();
-
-  return patterns.find((pattern) => {
+  const stderr = input.result.stderr.trim().slice(-4_000).toLowerCase();
+  const stderrPattern = patterns.find((pattern) => {
     const normalizedPattern = pattern.trim().toLowerCase();
     if (!normalizedPattern) {
       return false;
     }
     if (/^\d+$/.test(normalizedPattern)) {
-      return new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalizedPattern)}([^a-z0-9]|$)`, "i").test(haystack);
+      return new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalizedPattern)}([^a-z0-9]|$)`, "i").test(stderr);
     }
-    return haystack.includes(normalizedPattern);
+    return stderr.includes(normalizedPattern);
   });
+  if (stderrPattern) {
+    return stderrPattern;
+  }
+
+  // Failed CLIs can echo the prompt to stdout/all. Scan stdout only for narrow,
+  // machine-oriented diagnostics that are unlikely to occur in review prose.
+  const stdout = input.result.stdout.trim().slice(-4_000).toLowerCase();
+  if (/(^|[^a-z0-9_])rate_limit_exceeded([^a-z0-9_]|$)/i.test(stdout)) {
+    return "rate_limit_exceeded";
+  }
+  if (/(^|[\s[(])429(?=$|[\s)\],.;:])/i.test(stdout)) {
+    return "429";
+  }
+  return undefined;
 }
 
 function escapeRegExp(value: string): string {

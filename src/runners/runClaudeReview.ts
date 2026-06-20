@@ -21,6 +21,7 @@ export interface ClaudeReviewResult {
   reviewJsonPath: string;
   promptPath: string;
   review: ReviewJson;
+  source?: "file" | "stdout_fallback";
 }
 
 export async function runClaudeReview(
@@ -54,18 +55,19 @@ export async function runClaudeReview(
     throw new Error(`Claude review failed${result.timedOut ? " by timeout" : ""}: ${result.stderr || result.all}`);
   }
 
-  const review = await readOrExtractReviewJson(reviewJsonPath, result.all, input.commandLogPath);
-  await writeFile(reviewJsonPath, JSON.stringify(review, null, 2), "utf8");
+  const parsedReview = await readOrExtractReviewJson(reviewJsonPath, result.all, input.commandLogPath);
+  await writeFile(reviewJsonPath, JSON.stringify(parsedReview.review, null, 2), "utf8");
 
-  return { markdownPath, reviewJsonPath, promptPath, review };
+  return { markdownPath, reviewJsonPath, promptPath, ...parsedReview };
 }
 
 async function readOrExtractReviewJson(
   path: string,
   output: string,
   commandLogPath?: string
-): Promise<ReviewJson> {
+): Promise<{ review: ReviewJson; source: "file" | "stdout_fallback" }> {
   let parsed: unknown;
+  let source: "file" | "stdout_fallback" = "file";
 
   try {
     await access(path);
@@ -83,6 +85,8 @@ async function readOrExtractReviewJson(
       throw extracted.error;
     }
     parsed = extracted.value;
+    source = "stdout_fallback";
+    console.warn(`[ai-dev-loop] Claude review used stdout JSON fallback because ${path} was not written.`);
     if (commandLogPath) {
       const at = new Date().toISOString();
       await writeCommandLog(commandLogPath, {
@@ -96,5 +100,5 @@ async function readOrExtractReviewJson(
     }
   }
 
-  return reviewSchema.parse(parsed);
+  return { review: reviewSchema.parse(parsed), source };
 }

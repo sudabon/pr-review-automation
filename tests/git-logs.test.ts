@@ -55,6 +55,12 @@ describe("git and logs", () => {
         if (options.args?.[0] === "status") {
           return execResult({ stdout: "## main\n" });
         }
+        if (options.args?.join(" ") === "rev-parse --verify main^{commit}") {
+          return execResult({ stdout: "base-commit\n" });
+        }
+        if (options.args?.join(" ") === "rev-parse --verify HEAD^{commit}") {
+          return execResult({ stdout: "target-commit\n" });
+        }
         return execResult({ stdout: "" });
       });
 
@@ -68,8 +74,27 @@ describe("git and logs", () => {
       );
 
       expect(result.isEmpty).toBe(true);
+      expect(result.isSameCommit).toBe(false);
       expect(await readFile(result.statusPath, "utf8")).toContain("main");
       expect(await readFile(result.diffPath, "utf8")).toBe("");
+    });
+  });
+
+  it("identifies an empty diff whose base and target are the same commit", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor((options) => {
+        if (options.args?.[0] === "status") return execResult({ stdout: "## main\n" });
+        if (options.args?.[0] === "diff") return execResult({ stdout: "" });
+        if (options.args?.[0] === "rev-parse") return execResult({ stdout: "same-commit\n" });
+        throw new Error(`Unexpected command: ${options.command} ${options.args?.join(" ")}`);
+      });
+
+      const result = await collectDiff(
+        { cwd: dir, baseBranch: "main", targetBranch: "feature", inputDir: join(dir, "input") },
+        executor
+      );
+
+      expect(result).toMatchObject({ isEmpty: true, isSameCommit: true });
     });
   });
 

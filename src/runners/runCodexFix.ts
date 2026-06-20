@@ -110,8 +110,17 @@ export async function runCodexFix(
     changed,
     failureReason: !requiresChanges
       ? "codex was not given any review tasks"
-      : `codex exited with code ${execResult.exitCode}: ${execResult.stderr || execResult.all || "unknown error"}`
+      : formatExecutionFailure("codex", execResult)
   };
+}
+
+function formatExecutionFailure(fixer: string, result: ExecResult): string {
+  const termination = result.signal
+    ? ` was terminated by ${result.signal}`
+    : result.isCanceled
+      ? " was canceled"
+      : ` exited with code ${result.exitCode}`;
+  return `${fixer}${termination}: ${result.stderr || result.all || "unknown error"}`;
 }
 
 export function formatTokenLimitFailure(fixer: string, result: ExecResult, pattern: string): string {

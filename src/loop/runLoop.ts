@@ -165,6 +165,22 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
       }
 
       if (diff.isEmpty) {
+        if (diff.isSameCommit) {
+          const reason = `No diff to review because base ${input.options.baseBranch} and target ${input.options.targetBranch ?? "HEAD"} resolve to the same commit.`;
+          const nextState: LoopState = {
+            ...state,
+            status: "failed",
+            reason,
+            current_loop: loopNumber
+          };
+          await persistState(nextState);
+          return {
+            status: "failed",
+            reason,
+            runId: runDirectory.runId,
+            runDirectory: runDirectory.root
+          };
+        }
         const nextState: LoopState = {
           ...state,
           status: "completed",
@@ -191,6 +207,25 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         },
         executor
       );
+
+      if (review.source === "stdout_fallback" && review.review.tasks.length === 0) {
+        const reason =
+          "Claude produced an empty initial review only through the stdout JSON fallback; human verification is required.";
+        const nextState: LoopState = {
+          ...state,
+          status: "human_review_required",
+          reason,
+          current_loop: loopNumber,
+          history: [...state.history, { loop: loopNumber, action: "stop", reason }]
+        };
+        await persistState(nextState);
+        return {
+          status: "needs_human_review",
+          reason,
+          runId: runDirectory.runId,
+          runDirectory: runDirectory.root
+        };
+      }
 
       if (input.options.onlyReview) {
         const nextState: LoopState = {
@@ -383,6 +418,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
               }
               await persistState({ ...nextState, reason: resultReason, history });
             } else if (input.config.git.create_pr_on_success) {
+              let pullRequestFailure: string | undefined;
               try {
                 const pullRequest = await createPullRequest(
                   {
@@ -394,10 +430,32 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
                   executor
                 );
                 if (pullRequest.status !== "created") {
-                  console.warn(`[ai-dev-loop] pull request creation ${pullRequest.status}: ${pullRequest.reason}`);
+                  pullRequestFailure = `Pull request creation ${pullRequest.status}: ${pullRequest.reason}`;
                 }
               } catch (error) {
-                console.warn(`[ai-dev-loop] pull request creation failed: ${formatErrorMessage(error)}`);
+                pullRequestFailure = `Pull request creation failed: ${formatErrorMessage(error)}`;
+              }
+
+              if (pullRequestFailure) {
+                resultReason = `${decision.reason} ${pullRequestFailure}`;
+                const history = [...nextState.history];
+                const lastHistory = history.at(-1);
+                if (lastHistory) {
+                  history[history.length - 1] = { ...lastHistory, reason: resultReason };
+                }
+                await persistState({
+                  ...nextState,
+                  status: "human_review_required",
+                  reason: resultReason,
+                  history
+                });
+                return {
+                  status: "needs_human_review",
+                  reason: resultReason,
+                  runId: runDirectory.runId,
+                  runDirectory: runDirectory.root,
+                  decision
+                };
               }
             }
           }
