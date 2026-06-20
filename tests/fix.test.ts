@@ -313,6 +313,39 @@ describe("fix runners", () => {
 
       expect(result.status).toBe("human_review_required");
       expect(result.attempts[0]).toMatchObject({ status: "token_limited", changed: true });
+      expect(result.reason).toContain("automatic failover was stopped");
+    });
+  });
+
+  it("does not run another fixer over partial token-limited changes", async () => {
+    await withTempDir(async (dir) => {
+      let status = "";
+      const executor = makeExecutor((options) => {
+        if (options.command === "git") return execResult({ stdout: status });
+        if (options.command === "codex") {
+          status = " M src/a.ts\n";
+          return execResult({ exitCode: 1, stderr: "quota exceeded", all: "quota exceeded" });
+        }
+        throw new Error("Cursor must not run over partial Codex changes");
+      });
+
+      const result = await runFix(
+        {
+          config: createDefaultConfig("demo"),
+          cwd: dir,
+          fixDir: join(dir, "fix"),
+          review,
+          reviewJsonPath: "review.json",
+          dryRun: false
+        },
+        executor
+      );
+
+      expect(result).toMatchObject({
+        status: "human_review_required",
+        reason: expect.stringContaining("partial changes")
+      });
+      expect(executor.calls.some((call) => call.command === "agent")).toBe(false);
     });
   });
 

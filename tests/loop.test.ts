@@ -24,6 +24,14 @@ function final(decision: FinalResult["decision"], remaining_issues = [], reason 
   return { decision, remaining_issues, reason };
 }
 
+async function writeRequestedFinalResult(prompt: string, value: unknown): Promise<void> {
+  const match = /^Write JSON to (.+) with exactly:$/m.exec(prompt);
+  if (!match?.[1]) {
+    throw new Error("Final-review prompt did not include an output path");
+  }
+  await writeFile(match[1], JSON.stringify(value), "utf8");
+}
+
 describe("loop control", () => {
   it("does not require fixer CLIs for dry-run or review-only runs", () => {
     const config = createDefaultConfig("demo");
@@ -38,6 +46,9 @@ describe("loop control", () => {
     expect(getRequiredCliCommands(config, options)).toEqual(["claude", "codex", "agent"]);
     expect(getRequiredCliCommands(config, { ...options, dryRun: true })).toEqual(["claude"]);
     expect(getRequiredCliCommands(config, { ...options, onlyReview: true })).toEqual(["claude"]);
+
+    config.agents.main_reviewer = "reviewer-wrapper";
+    expect(getRequiredCliCommands(config, { ...options, onlyReview: true })).toEqual(["reviewer-wrapper"]);
   });
 
   it("stops on approval and honors stop_on_validation_failure", () => {
@@ -66,6 +77,19 @@ describe("loop control", () => {
       status: "human_review_required"
     });
 
+    expect(
+      shouldContinue({
+        ...validationFailureInput,
+        validationResult: {
+          ...validationFailureInput.validationResult,
+          steps: {
+            ...validationPassed.steps,
+            test: { status: "failed", exit_code: 124, timed_out: true }
+          }
+        }
+      }).reason
+    ).toContain("Validation timed out for: test");
+
     config.limits.stop_on_validation_failure = false;
     expect(
       shouldContinue({
@@ -82,7 +106,7 @@ describe("loop control", () => {
         config,
         loopNumber: 1,
         maxLoops: 3,
-        finalResult: final("needs_changes", ["same"]),
+        finalResult: final("needs_changes", [{ severity: "major", description: "same" }]),
         validationResult: validationPassed,
         maxRepeatCount: 2
       }).status
@@ -92,7 +116,7 @@ describe("loop control", () => {
         config,
         loopNumber: 3,
         maxLoops: 3,
-        finalResult: final("needs_changes", ["same"]),
+        finalResult: final("needs_changes", [{ severity: "major", description: "same" }]),
         validationResult: validationPassed,
         maxRepeatCount: 0
       }).status
@@ -121,10 +145,10 @@ describe("loop control", () => {
   });
 
   it("tracks repeated remaining issues", () => {
-    const first = detectRepeatedIssues({}, ["Bug remains"]);
-    const second = detectRepeatedIssues(first.counts, ["bug remains"]);
+    const first = detectRepeatedIssues({}, [{ severity: "major", description: "Bug remains" }]);
+    const second = detectRepeatedIssues(first.counts, [{ severity: "major", description: "bug remains" }]);
     expect(second.maxRepeatCount).toBe(2);
-    expect(second.repeatedKeys).toEqual(["bug remains"]);
+    expect(second.repeatedKeys).toEqual(["major:bug remains"]);
 
     const firstWithId = detectRepeatedIssues({}, [
       { id: "R1", severity: "major", title: "Original wording" }
@@ -145,7 +169,7 @@ describe("loop control", () => {
         config,
         loopNumber: 1,
         maxLoops: 3,
-        finalResult: final("needs_changes", ["issue"]),
+        finalResult: final("needs_changes", [{ severity: "major", description: "issue" }]),
         validationResult: validationPassed,
         maxRepeatCount: 0,
         baselineDiffLineCount: 5_000,
@@ -157,7 +181,7 @@ describe("loop control", () => {
         config,
         loopNumber: 1,
         maxLoops: 3,
-        finalResult: final("needs_changes", ["issue"]),
+        finalResult: final("needs_changes", [{ severity: "major", description: "issue" }]),
         validationResult: validationPassed,
         maxRepeatCount: 0,
         baselineDiffLineCount: 5_000,
@@ -314,7 +338,7 @@ describe("loop control", () => {
       config.commands.test = "";
       config.commands.build = "";
       let status = "";
-      const executor = makeExecutor((options) => {
+      const executor = makeExecutor(async (options) => {
         const args = options.args?.join(" ") ?? "";
         if (options.command === "git" && args === "rev-parse --is-inside-work-tree") return execResult({ stdout: "true" });
         if (options.command === "git" && args === "rev-parse --show-toplevel") return execResult({ stdout: dir });
@@ -330,7 +354,8 @@ describe("loop control", () => {
           return execResult({ stdout: "fixed" });
         }
         if (options.command === "claude") {
-          const output = options.input?.includes("Perform the final review")
+          const isFinalReview = options.input?.includes("Perform the final review") ?? false;
+          const output = isFinalReview
             ? { decision: "approved", remaining_issues: [], reason: "clean" }
             : {
                 summary: "review",
@@ -346,6 +371,9 @@ describe("loop control", () => {
                   acceptance_criteria: ["fixed"]
                 }]
               };
+          if (isFinalReview) {
+            await writeRequestedFinalResult(options.input ?? "", output);
+          }
           return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
         }
         return execResult();
@@ -522,7 +550,7 @@ describe("loop control", () => {
       let fixerCount = 0;
       let workingTreeStatus = "";
 
-      const executor = makeExecutor((options) => {
+      const executor = makeExecutor(async (options) => {
         if (options.command === "git" && options.args?.join(" ") === "rev-parse --is-inside-work-tree") {
           return execResult({ stdout: "true" });
         }
@@ -554,6 +582,9 @@ describe("loop control", () => {
               finalReviewCount < 3
                 ? { decision: "needs_changes", remaining_issues: [{ severity: "major", title: "Bug" }], reason: "more" }
                 : { decision: "approved", remaining_issues: [], reason: "clean" };
+            if (finalJson.decision === "approved") {
+              await writeRequestedFinalResult(prompt, finalJson);
+            }
             return execResult({ stdout: JSON.stringify(finalJson), all: JSON.stringify(finalJson) });
           }
           const reviewJson = {
@@ -867,7 +898,7 @@ describe("loop control", () => {
       config.commands.test = "";
       config.commands.build = "";
       let status = "";
-      const executor = makeExecutor((options) => {
+      const executor = makeExecutor(async (options) => {
         const args = options.args?.join(" ") ?? "";
         if (options.command === "git" && args === "status --porcelain") {
           return execResult({ stdout: status });
@@ -884,7 +915,8 @@ describe("loop control", () => {
         }
         if (options.command === "claude") {
           const prompt = options.input ?? options.args?.at(-1) ?? "";
-          const output = prompt.includes("Perform the final review")
+          const isFinalReview = prompt.includes("Perform the final review");
+          const output = isFinalReview
             ? { decision: "approved", remaining_issues: [], reason: "clean" }
             : {
                 summary: "review",
@@ -902,6 +934,9 @@ describe("loop control", () => {
                   }
                 ]
               };
+          if (isFinalReview) {
+            await writeRequestedFinalResult(prompt, output);
+          }
           return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
         }
         return execResult();
@@ -1076,7 +1111,7 @@ describe("loop control", () => {
         config.commands.test = "";
         config.commands.build = "";
         let status = "";
-        const executor = makeExecutor((options) => {
+        const executor = makeExecutor(async (options) => {
           const args = options.args?.join(" ") ?? "";
           if (options.command === "git" && args === "rev-parse --is-inside-work-tree") {
             return execResult({ stdout: "true" });
@@ -1105,7 +1140,8 @@ describe("loop control", () => {
           }
           if (options.command === "claude") {
             const prompt = options.input ?? options.args?.at(-1) ?? "";
-            const output = prompt.includes("Perform the final review")
+            const isFinalReview = prompt.includes("Perform the final review");
+            const output = isFinalReview
               ? { decision: "approved", remaining_issues: [], reason: "clean" }
               : {
                   summary: "review",
@@ -1123,6 +1159,9 @@ describe("loop control", () => {
                     }
                   ]
                 };
+            if (isFinalReview) {
+              await writeRequestedFinalResult(prompt, output);
+            }
             return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
           }
           return execResult();
@@ -1152,7 +1191,7 @@ describe("loop control", () => {
     }
   });
 
-  it("continues after all fixers make no changes and skips auto-commit in the current checkout", async () => {
+  it("stops for human review after all fixers make no changes", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
       config.git.use_worktree = false;
@@ -1212,12 +1251,17 @@ describe("loop control", () => {
       });
 
       expect(result).toMatchObject({
-        status: "completed",
-        reason: expect.stringContaining("Automatic commit was skipped because git.use_worktree is false")
+        status: "needs_human_review",
+        reason: expect.stringContaining("made no working-tree changes")
       });
+      expect(executor.calls.some((call) => call.command === "pnpm")).toBe(false);
+      expect(
+        executor.calls.filter((call) => call.command === "claude" && call.args?.[0] !== "--version")
+      ).toHaveLength(1);
       expect(executor.calls.some((call) => call.args?.[0] === "commit")).toBe(false);
       const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
-      expect(state.reason).toContain("Automatic commit was skipped");
+      expect(state.status).toBe("human_review_required");
+      expect(state.reason).toContain("made no working-tree changes");
     });
   });
 });

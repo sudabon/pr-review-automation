@@ -115,6 +115,18 @@ export async function runFix(
 
     const nextFixer = input.config.agents.fixers[index + 1];
 
+    if (attempt.status === "token_limited" && attempt.changed) {
+      const reason = `${attempt.failureReason} ${fixer} modified the working tree before reaching its token limit; automatic failover was stopped to avoid layering another fix on partial changes.`;
+      failovers.push(await recordFailover(input.commandLogPath, fixer, undefined, reason));
+      return {
+        status: "human_review_required",
+        outputPaths: attempts.map((item) => item.outputPath),
+        attempts,
+        failovers,
+        reason
+      };
+    }
+
     if (attempt.status === "token_limited" && nextFixer) {
       const reason = attempt.failureReason ?? "token_limit";
       failovers.push(await recordFailover(input.commandLogPath, fixer, nextFixer, reason));

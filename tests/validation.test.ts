@@ -118,4 +118,19 @@ describe("validation runner", () => {
       });
     });
   });
+
+  it("does not pass a timed-out validation step with a zero exit code", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      const executor = makeExecutor(() => execResult({ exitCode: 0, timedOut: true }));
+
+      const result = await runValidation(config, dir, join(dir, "validation"), undefined, executor);
+
+      expect(result.status).toBe("failed");
+      expect(result.steps.lint.status).toBe("failed");
+    });
+  });
 });

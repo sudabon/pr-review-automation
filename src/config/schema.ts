@@ -80,6 +80,10 @@ export const configSchema = z.strictObject({
 export type Config = z.infer<typeof configSchema>;
 export type FixerName = z.infer<typeof fixerSchema>;
 
+export function resolveMainReviewerCommand(config: Config): string {
+  return config.agents.main_reviewer === "claude" ? config.claude.command : config.agents.main_reviewer;
+}
+
 export function createDefaultConfig(projectName = "ai-dev-loop-target"): Config {
   return configSchema.parse({
     project: {

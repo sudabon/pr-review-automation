@@ -1,4 +1,4 @@
-import type { RemainingIssue } from "../runners/reviewSchemas.js";
+import type { NormalizedRemainingIssue } from "../runners/reviewSchemas.js";
 
 export type RepeatedIssueCounts = Record<string, number>;
 
@@ -10,7 +10,7 @@ export interface RepeatedIssueResult {
 
 export function detectRepeatedIssues(
   previousCounts: RepeatedIssueCounts,
-  currentIssues: RemainingIssue[]
+  currentIssues: NormalizedRemainingIssue[]
 ): RepeatedIssueResult {
   const currentKeys = [...new Set(currentIssues.map(issueKey).filter(Boolean))];
   const counts: RepeatedIssueCounts = {};
@@ -30,16 +30,14 @@ export function detectRepeatedIssues(
   };
 }
 
-export function issueKey(issue: RemainingIssue): string {
-  if (typeof issue === "string") {
-    return normalize(issue);
-  }
-
-  if (issue.id) {
+export function issueKey(issue: NormalizedRemainingIssue): string {
+  if ("id" in issue && issue.id) {
     return normalize(issue.id);
   }
 
-  return normalize([issue.severity, issue.category, issue.title ?? issue.description].filter(Boolean).join(":"));
+  const category = "category" in issue ? issue.category : undefined;
+  const title = "title" in issue ? issue.title : undefined;
+  return normalize([issue.severity, category, title ?? issue.description].filter(Boolean).join(":"));
 }
 
 function normalize(value: string): string {

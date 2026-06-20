@@ -54,11 +54,6 @@ export type FinalResult = z.infer<typeof finalResultSchema>;
 export type RemainingIssue = z.input<typeof remainingIssueSchema>;
 export type NormalizedRemainingIssue = z.output<typeof remainingIssueSchema>;
 
-export function hasImportantIssues(issues: RemainingIssue[]): boolean {
-  return issues.some((issue) => {
-    if (typeof issue === "string") {
-      return issue.trim().length > 0;
-    }
-    return ["blocker", "critical", "major"].includes(issue.severity ?? "major");
-  });
+export function hasImportantIssues(issues: NormalizedRemainingIssue[]): boolean {
+  return issues.some((issue) => ["blocker", "critical", "major"].includes(issue.severity));
 }

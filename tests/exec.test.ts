@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { execWithTimeout } from "../src/utils/execWithTimeout.js";
+import { DEFAULT_GIT_TIMEOUT_MS, execWithTimeout } from "../src/utils/execWithTimeout.js";
+import { execResult, makeExecutor } from "./helpers.js";
 
 describe("execWithTimeout", () => {
   it("returns an ExecResult for timeouts", async () => {
@@ -32,5 +33,13 @@ describe("execWithTimeout", () => {
       timedOut: false,
       signal: "SIGTERM"
     });
+  });
+
+  it("applies a default timeout to git commands", async () => {
+    const executor = makeExecutor(() => execResult());
+
+    await execWithTimeout({ command: "git", args: ["status"] }, executor);
+
+    expect(executor.calls[0]?.timeoutMs).toBe(DEFAULT_GIT_TIMEOUT_MS);
   });
 });

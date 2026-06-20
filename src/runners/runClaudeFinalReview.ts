@@ -1,6 +1,6 @@
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Config } from "../config/schema.js";
+import { resolveMainReviewerCommand, type Config } from "../config/schema.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { buildClaudeFinalPrompt } from "../prompts/buildClaudeFinalPrompt.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
@@ -45,7 +45,7 @@ export async function runClaudeFinalReview(
   await rm(finalResultPath, { force: true });
 
   const result = await executor({
-    command: input.config.claude.command,
+    command: resolveMainReviewerCommand(input.config),
     args: input.config.claude.args,
     input: prompt,
     cwd: input.cwd,
@@ -70,6 +70,7 @@ async function readOrExtractFinalJson(
   commandLogPath?: string
 ): Promise<FinalResult> {
   let parsed: unknown;
+  let usedFallback = false;
 
   try {
     await access(path);
@@ -98,7 +99,17 @@ async function readOrExtractFinalJson(
       throw extracted.error;
     }
     parsed = extracted.value;
+    usedFallback = true;
   }
 
-  return finalResultSchema.parse(parsed);
+  const finalResult = finalResultSchema.parse(parsed);
+  if (usedFallback && finalResult.decision === "approved") {
+    return {
+      ...finalResult,
+      decision: "human_review_required",
+      reason: `Approval was returned only through the stdout JSON fallback and requires human verification. ${finalResult.reason}`
+    };
+  }
+
+  return finalResult;
 }

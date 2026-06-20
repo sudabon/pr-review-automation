@@ -194,9 +194,62 @@ describe("review runners", () => {
         executor
       );
 
-      expect(result.finalResult.decision).toBe("approved");
-      expect(await readFile(result.finalResultPath, "utf8")).toContain("approved");
+      expect(result.finalResult.decision).toBe("human_review_required");
+      expect(result.finalResult.reason).toContain("stdout JSON fallback");
+      expect(await readFile(result.finalResultPath, "utf8")).toContain("human_review_required");
       expect(await readFile(commandLogPath, "utf8")).toContain('"event":"json_fallback"');
+    });
+  });
+
+  it("accepts approval written to the requested final-result file", async () => {
+    await withTempDir(async (dir) => {
+      const finalDir = join(dir, "final-file");
+      const executor = makeExecutor(async () => {
+        await writeFile(
+          join(finalDir, "final-result.json"),
+          JSON.stringify({ decision: "approved", remaining_issues: [], reason: "clean" }),
+          "utf8"
+        );
+        return execResult({ stdout: "Review complete", all: "Review complete" });
+      });
+
+      const result = await runClaudeFinalReview(
+        {
+          config: createDefaultConfig("demo"),
+          cwd: dir,
+          initialReviewPath: "review.md",
+          validationResultPath: "validation.json",
+          diffPath: "diff.patch",
+          finalDir,
+          fixLogPaths: []
+        },
+        executor
+      );
+
+      expect(result.finalResult.decision).toBe("approved");
+    });
+  });
+
+  it("uses the configured main reviewer command", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.main_reviewer = "reviewer-wrapper";
+      const executor = makeExecutor(() =>
+        execResult({ stdout: JSON.stringify(reviewJson), all: JSON.stringify(reviewJson) })
+      );
+
+      await runClaudeReview(
+        {
+          config,
+          cwd: dir,
+          diffPath: "diff.patch",
+          statusPath: "status.txt",
+          reviewDir: join(dir, "review-wrapper")
+        },
+        executor
+      );
+
+      expect(executor.calls[0]?.command).toBe("reviewer-wrapper");
     });
   });
 

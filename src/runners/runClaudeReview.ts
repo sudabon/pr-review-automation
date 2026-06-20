@@ -1,6 +1,6 @@
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Config } from "../config/schema.js";
+import { resolveMainReviewerCommand, type Config } from "../config/schema.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { buildClaudeReviewPrompt } from "../prompts/buildClaudeReviewPrompt.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
@@ -41,7 +41,7 @@ export async function runClaudeReview(
   await rm(reviewJsonPath, { force: true });
 
   const result = await executor({
-    command: input.config.claude.command,
+    command: resolveMainReviewerCommand(input.config),
     args: input.config.claude.args,
     input: prompt,
     cwd: input.cwd,

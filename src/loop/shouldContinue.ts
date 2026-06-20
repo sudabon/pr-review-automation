@@ -38,10 +38,15 @@ export type LoopDecision =
 
 export function shouldContinue(input: LoopDecisionInput): LoopDecision {
   if (input.validationResult.status === "failed" && input.config.limits.stop_on_validation_failure) {
+    const timedOutSteps = Object.entries(input.validationResult.steps)
+      .filter(([, step]) => step.timed_out)
+      .map(([name]) => name);
     return {
       action: "stop",
       status: "human_review_required",
-      reason: "Validation failed and stop_on_validation_failure is enabled.",
+      reason: timedOutSteps.length > 0
+        ? `Validation timed out for: ${timedOutSteps.join(", ")}. stop_on_validation_failure is enabled.`
+        : "Validation failed and stop_on_validation_failure is enabled.",
       success: false
     };
   }

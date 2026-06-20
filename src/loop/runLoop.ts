@@ -1,7 +1,7 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { fixerSchema, type Config } from "../config/schema.js";
+import { fixerSchema, resolveMainReviewerCommand, type Config } from "../config/schema.js";
 import { collectDiff } from "../git/collectDiff.js";
 import { commitChanges } from "../git/commitChanges.js";
 import { ensureGitRepository, ensureRequiredCliCommands } from "../git/checks.js";
@@ -262,6 +262,24 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         };
       }
 
+      if (fix.status === "no_changes") {
+        const nextState: LoopState = {
+          ...state,
+          status: "human_review_required",
+          reason: fix.reason,
+          current_loop: loopNumber,
+          failovers: [...state.failovers, ...toLoopStateFailovers(fix.failovers)],
+          history: [...state.history, { loop: loopNumber, action: "stop", reason: fix.reason }]
+        };
+        await persistState(nextState);
+        return {
+          status: "needs_human_review",
+          reason: fix.reason,
+          runId: runDirectory.runId,
+          runDirectory: runDirectory.root
+        };
+      }
+
       const validation = await runValidation(
         input.config,
         worktreePath,
@@ -412,7 +430,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
 }
 
 export function getRequiredCliCommands(config: Config, options: RunLoopOptions): string[] {
-  const commands = [config.claude.command];
+  const commands = [resolveMainReviewerCommand(config)];
   if (!options.dryRun && !options.onlyReview) {
     for (const fixer of config.agents.fixers) {
       commands.push(fixer === "codex" ? config.codex.command : config.cursor.command);

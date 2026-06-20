@@ -30,11 +30,14 @@ export interface ExecResult {
 
 export type CommandExecutor = (options: ExecWithTimeoutOptions) => Promise<ExecResult>;
 
+export const DEFAULT_GIT_TIMEOUT_MS = 60_000;
+
 export function formatCommand(command: string, args: string[] = []): string {
   return [command, ...args].join(" ");
 }
 
-export const defaultExecutor: CommandExecutor = async (options) => {
+export const defaultExecutor: CommandExecutor = async (rawOptions) => {
+  const options = withDefaultTimeout(rawOptions);
   const startedAtDate = new Date();
   const startedAt = startedAtDate.toISOString();
   const commandString = formatCommand(options.command, options.args);
@@ -128,7 +131,14 @@ export async function execWithTimeout(
   options: ExecWithTimeoutOptions,
   executor: CommandExecutor = defaultExecutor
 ): Promise<ExecResult> {
-  return executor(options);
+  return executor(withDefaultTimeout(options));
+}
+
+function withDefaultTimeout(options: ExecWithTimeoutOptions): ExecWithTimeoutOptions {
+  if (options.timeoutMs !== undefined || options.command !== "git") {
+    return options;
+  }
+  return { ...options, timeoutMs: DEFAULT_GIT_TIMEOUT_MS };
 }
 
 async function persistExecResult(options: ExecWithTimeoutOptions, result: ExecResult): Promise<void> {

@@ -74,7 +74,7 @@ export async function runValidation(
     });
 
     steps[name] = {
-      status: result.exitCode === 0 ? "passed" : "failed",
+      status: result.exitCode === 0 && !result.timedOut ? "passed" : "failed",
       exit_code: result.exitCode,
       log_path: logPath,
       timed_out: result.timedOut,
