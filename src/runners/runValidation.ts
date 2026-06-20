@@ -10,6 +10,8 @@ export interface ValidationStepResult {
   status: ValidationStatus;
   exit_code: number | null;
   log_path?: string;
+  timed_out?: boolean;
+  stderr?: string;
 }
 
 export interface ValidationResult {
@@ -41,21 +43,24 @@ export async function runValidation(
     const logPath = join(validationDir, `${name}.log`);
 
     if (!command) {
-      steps[name] = { status: "skipped", exit_code: null };
+      steps[name] = { status: "skipped", exit_code: null, timed_out: false, stderr: "" };
       continue;
     }
 
     const parsedCommand = parseValidationCommand(command, config.project.package_manager);
     if (!parsedCommand) {
+      const rejectionReason = validationCommandRejectionReason(command, config.project.package_manager);
       await writeFile(
         logPath,
-        `Refusing to run unsafe validation command. Use "${config.project.package_manager} run <script>" or a bare package script name.\n`,
+        `${rejectionReason}\n`,
         "utf8"
       );
       steps[name] = {
         status: "failed",
         exit_code: 1,
-        log_path: logPath
+        log_path: logPath,
+        timed_out: false,
+        stderr: rejectionReason
       };
       continue;
     }
@@ -71,7 +76,9 @@ export async function runValidation(
     steps[name] = {
       status: result.exitCode === 0 ? "passed" : "failed",
       exit_code: result.exitCode,
-      log_path: logPath
+      log_path: logPath,
+      timed_out: result.timedOut,
+      stderr: result.stderr
     };
   }
 
@@ -83,6 +90,19 @@ export async function runValidation(
 
   await writeFile(join(validationDir, "validation-result.json"), JSON.stringify(validationResult, null, 2), "utf8");
   return validationResult;
+}
+
+const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"] as const;
+
+function validationCommandRejectionReason(
+  rawCommand: string,
+  packageManager: Config["project"]["package_manager"]
+): string {
+  const command = rawCommand.trim().split(/\s+/, 1)[0];
+  if (command && PACKAGE_MANAGERS.includes(command as (typeof PACKAGE_MANAGERS)[number]) && command !== packageManager) {
+    return `Refusing validation command because it uses package manager "${command}" while project.package_manager is "${packageManager}". Use "${packageManager} run <script>" or a bare package script name.`;
+  }
+  return `Refusing to run unsafe validation command. Use "${packageManager} run <script>" or a bare package script name.`;
 }
 
 export function parseValidationCommand(

@@ -104,6 +104,16 @@ describe("review runners", () => {
     ).toBe(true);
   });
 
+  it("normalizes string remaining issues to important issue objects", () => {
+    const result = finalResultSchema.parse({
+      decision: "needs_changes",
+      remaining_issues: [" Bug remains "],
+      reason: "more"
+    });
+
+    expect(result.remaining_issues).toEqual([{ severity: "major", description: "Bug remains" }]);
+  });
+
   it("rejects invalid review severity", async () => {
     await withTempDir(async (dir) => {
       const invalid = { ...reviewJson, tasks: [{ ...reviewJson.tasks[0], severity: "urgent" }] };

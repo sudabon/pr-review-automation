@@ -21,6 +21,8 @@ export interface ExecResult {
   stderr: string;
   all: string;
   timedOut: boolean;
+  signal?: string;
+  isCanceled?: boolean;
   startedAt: string;
   endedAt: string;
   durationMs: number;
@@ -60,8 +62,11 @@ export const defaultExecutor: CommandExecutor = async (options) => {
     const completed = subprocess as typeof subprocess & {
       failed?: boolean;
       timedOut?: boolean;
+      signal?: string;
+      isCanceled?: boolean;
     };
-    if (completed.failed && completed.exitCode === undefined && !completed.timedOut) {
+    const terminatedBySignal = completed.signal !== undefined || completed.isCanceled === true;
+    if (completed.failed && completed.exitCode === undefined && !completed.timedOut && !terminatedBySignal) {
       throw subprocess;
     }
 
@@ -69,11 +74,13 @@ export const defaultExecutor: CommandExecutor = async (options) => {
     const all = subprocess.all ?? `${subprocess.stdout ?? ""}${subprocess.stderr ?? ""}`;
     const result: ExecResult = {
       command: commandString,
-      exitCode: completed.exitCode ?? (completed.timedOut ? 124 : 0),
+      exitCode: completed.exitCode ?? (completed.timedOut ? 124 : 1),
       stdout: subprocess.stdout ?? "",
       stderr: subprocess.stderr ?? "",
       all,
       timedOut: Boolean(completed.timedOut),
+      signal: completed.signal,
+      isCanceled: Boolean(completed.isCanceled),
       startedAt,
       endedAt: endedAtDate.toISOString(),
       durationMs: endedAtDate.getTime() - startedAtDate.getTime()
@@ -89,6 +96,8 @@ export const defaultExecutor: CommandExecutor = async (options) => {
       stderr?: string;
       all?: string;
       timedOut?: boolean;
+      signal?: string;
+      isCanceled?: boolean;
       message?: string;
     };
 
@@ -103,6 +112,8 @@ export const defaultExecutor: CommandExecutor = async (options) => {
       stderr: maybeError.stderr ?? maybeError.message ?? "",
       all: maybeError.all ?? `${maybeError.stdout ?? ""}${maybeError.stderr ?? maybeError.message ?? ""}`,
       timedOut: Boolean(maybeError.timedOut),
+      signal: maybeError.signal,
+      isCanceled: Boolean(maybeError.isCanceled),
       startedAt,
       endedAt: endedAtDate.toISOString(),
       durationMs: endedAtDate.getTime() - startedAtDate.getTime()
@@ -133,6 +144,8 @@ async function persistExecResult(options: ExecWithTimeoutOptions, result: ExecRe
       ended_at: result.endedAt,
       exit_code: result.exitCode,
       timed_out: result.timedOut,
+      signal: result.signal,
+      is_canceled: result.isCanceled,
       duration_ms: result.durationMs
     });
   }

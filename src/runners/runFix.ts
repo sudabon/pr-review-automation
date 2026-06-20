@@ -25,14 +25,17 @@ export interface RunFixInput {
   commandLogPath?: string;
 }
 
-export interface RunFixResult {
-  status: "completed" | "skipped" | "human_review_required" | "no_changes";
-  activeFixer?: FixerName;
+interface RunFixResultBase {
   outputPaths: string[];
   attempts: FixRunnerResult[];
   failovers: FixFailover[];
-  reason?: string;
 }
+
+export type RunFixResult =
+  | (RunFixResultBase & { status: "completed"; activeFixer: FixerName })
+  | (RunFixResultBase & { status: "skipped"; reason?: string })
+  | (RunFixResultBase & { status: "human_review_required"; reason: string })
+  | (RunFixResultBase & { status: "no_changes"; activeFixer: FixerName; reason: string });
 
 const severityRank: Record<ReviewTask["severity"], number> = {
   blocker: 0,
@@ -95,6 +98,11 @@ export async function runFix(
     }
 
     if (attempt.status === "no_changes") {
+      const nextFixer = input.config.agents.fixers[index + 1];
+      if (nextFixer) {
+        failovers.push(await recordFailover(input.commandLogPath, fixer, nextFixer, attempt.failureReason));
+        continue;
+      }
       return {
         status: "no_changes",
         activeFixer: fixer,
@@ -129,6 +137,18 @@ export async function runFix(
         `${fixer} fixer failed: ${attempt.failureReason || attempt.execResult.stderr || attempt.execResult.all || "unknown error"}`
       );
     }
+  }
+
+  const noChangeAttempt = attempts.find((attempt) => attempt.status === "no_changes");
+  if (noChangeAttempt?.status === "no_changes") {
+    return {
+      status: "no_changes",
+      activeFixer: noChangeAttempt.fixer,
+      outputPaths: attempts.map((item) => item.outputPath),
+      attempts,
+      failovers,
+      reason: noChangeAttempt.failureReason
+    };
   }
 
   if (!attempts.every((attempt) => attempt.status === "token_limited")) {

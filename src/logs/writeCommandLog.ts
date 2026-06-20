@@ -8,6 +8,8 @@ export interface CommandLogEntry {
   exit_code: number | null;
   cwd?: string;
   timed_out?: boolean;
+  signal?: string;
+  is_canceled?: boolean;
   duration_ms?: number;
   event?: string;
   reason?: string;

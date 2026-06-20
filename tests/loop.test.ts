@@ -210,6 +210,53 @@ describe("loop control", () => {
     });
   });
 
+  it("rejects unknown and inconsistent fields in resumed state", async () => {
+    const invalidStates = [
+      { extra: true },
+      { worktree_mode: "current", worktree_branch: "ai-dev-loop/stale" }
+    ];
+
+    for (const [index, extra] of invalidStates.entries()) {
+      await withTempDir(async (dir) => {
+        const runId = `strict-state-${index}`;
+        const statePath = join(dir, ".ai-dev-loop", "runs", runId, "meta", "loop-state.json");
+        await mkdir(join(dir, ".ai-dev-loop", "runs", runId, "meta"), { recursive: true });
+        await writeFile(
+          statePath,
+          JSON.stringify({
+            run_id: runId,
+            status: "failed",
+            current_loop: 1,
+            max_loops: 3,
+            worktree_path: dir,
+            remaining_issues: [],
+            repeated_issues: {},
+            failovers: [],
+            history: [],
+            ...extra
+          }),
+          "utf8"
+        );
+
+        await expect(
+          runLoop({
+            cwd: dir,
+            config: createDefaultConfig("demo"),
+            options: {
+              baseBranch: "main",
+              maxLoops: 3,
+              commitOnSuccess: false,
+              dryRun: true,
+              onlyReview: false,
+              resumeRunId: runId
+            },
+            executor: makeExecutor(() => execResult())
+          })
+        ).rejects.toThrow("Unrecognized key");
+      });
+    }
+  });
+
   it("cleans up a temporary worktree when the loop exits", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
@@ -259,7 +306,7 @@ describe("loop control", () => {
     });
   });
 
-  it("keeps an approved worktree so successful fixes remain accessible", async () => {
+  it("cleans an approved worktree and its temporary branch", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
       config.commands.lint = "";
@@ -313,8 +360,9 @@ describe("loop control", () => {
 
       expect(result.status).toBe("completed");
       expect(executor.calls.some((call) => call.args?.slice(0, 3).join(" ") === "worktree remove --force")).toBe(
-        false
+        true
       );
+      expect(executor.calls.some((call) => call.args?.slice(0, 2).join(" ") === "branch -D")).toBe(true);
     });
   });
 
@@ -387,7 +435,6 @@ describe("loop control", () => {
     await withTempDir(async (dir) => {
       await mkdir(join(dir, ".git"), { recursive: true });
       const config = createDefaultConfig("demo");
-      config.git.use_worktree = false;
       config.agents.fixers = ["codex"];
       config.commands.lint = "";
       config.commands.typecheck = "";
@@ -454,6 +501,10 @@ describe("loop control", () => {
       expect(state.status).toBe("failed");
       expect(state.reason).toContain("codex fixer failed");
       expect(state.current_loop).toBe(1);
+      expect(executor.calls.some((call) => call.args?.slice(0, 3).join(" ") === "worktree remove --force")).toBe(
+        true
+      );
+      expect(executor.calls.some((call) => call.args?.slice(0, 2).join(" ") === "branch -D")).toBe(true);
     });
   });
 
@@ -1010,7 +1061,7 @@ describe("loop control", () => {
 
   it("commits approved fixes only when both commit gates are enabled", async () => {
     const scenarios = [
-      { option: true, config: true, expected: true },
+      { option: true, config: true, expected: false },
       { option: false, config: true, expected: false },
       { option: true, config: false, expected: false }
     ];
@@ -1094,11 +1145,14 @@ describe("loop control", () => {
         expect(executor.calls.some((call) => call.command === "git" && call.args?.[0] === "commit")).toBe(
           scenario.expected
         );
+        if (scenario.option && scenario.config) {
+          expect(result.reason).toContain("Automatic commit was skipped because git.use_worktree is false");
+        }
       });
     }
   });
 
-  it("continues after a no-change fixer and reports when approval creates no commit", async () => {
+  it("continues after all fixers make no changes and skips auto-commit in the current checkout", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
       config.git.use_worktree = false;
@@ -1116,7 +1170,9 @@ describe("loop control", () => {
         if (args === "status --porcelain") return execResult({ stdout: "" });
         if (args === "diff --binary --merge-base main") return execResult({ stdout: patch });
         if (args === "diff --binary HEAD") return execResult({ stdout: "snapshot" });
-        if (options.command === "codex") return execResult({ stdout: "nothing to change" });
+        if (options.command === "codex" || options.command === "agent") {
+          return execResult({ stdout: "nothing to change" });
+        }
         if (options.command === "claude") {
           const prompt = options.input ?? "";
           const output = prompt.includes("Perform the final review")
@@ -1157,11 +1213,11 @@ describe("loop control", () => {
 
       expect(result).toMatchObject({
         status: "completed",
-        reason: expect.stringContaining("No commit was created because the working tree was clean")
+        reason: expect.stringContaining("Automatic commit was skipped because git.use_worktree is false")
       });
       expect(executor.calls.some((call) => call.args?.[0] === "commit")).toBe(false);
       const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
-      expect(state.reason).toContain("No commit was created");
+      expect(state.reason).toContain("Automatic commit was skipped");
     });
   });
 });

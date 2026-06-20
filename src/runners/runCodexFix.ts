@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Config } from "../config/schema.js";
+import type { Config, FixerName } from "../config/schema.js";
 import { buildCodexFixPrompt } from "../prompts/buildCodexFixPrompt.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import type { ReviewJson } from "./reviewSchemas.js";
@@ -16,16 +16,23 @@ export interface FixRunnerInput {
   commandLogPath?: string;
 }
 
-export interface FixRunnerResult {
-  fixer: "codex" | "cursor";
-  status: "completed" | "failed" | "token_limited" | "no_changes";
+interface FixRunnerResultBase {
+  fixer: FixerName;
   promptPath: string;
   outputPath: string;
   execResult: ExecResult;
-  changed?: boolean;
-  failureReason?: string;
-  tokenLimitPattern?: string;
 }
+
+export type FixRunnerResult =
+  | (FixRunnerResultBase & { status: "completed"; changed: true })
+  | (FixRunnerResultBase & { status: "no_changes"; changed: false; failureReason: string })
+  | (FixRunnerResultBase & {
+      status: "token_limited";
+      changed: boolean;
+      failureReason: string;
+      tokenLimitPattern: string;
+    })
+  | (FixRunnerResultBase & { status: "failed"; changed: boolean; failureReason: string });
 
 export async function runCodexFix(
   input: FixRunnerInput,
@@ -77,22 +84,33 @@ export async function runCodexFix(
     execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && changed && !tokenLimitPattern;
   const noChanges =
     execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && !changed && !tokenLimitPattern;
-  const failureReason = tokenLimitFailure
-    ? tokenLimitFailure
-    : !requiresChanges
-      ? "codex was not given any review tasks"
-      : execResult.exitCode === 0 && !execResult.timedOut && !changed
-        ? "codex exited successfully but made no working-tree changes"
-        : undefined;
-  return {
-    fixer: "codex",
-    status: tokenLimitPattern ? "token_limited" : completed ? "completed" : noChanges ? "no_changes" : "failed",
+  const base = {
+    fixer: "codex" as const,
     promptPath,
     outputPath,
-    execResult,
+    execResult
+  };
+  if (tokenLimitPattern && tokenLimitFailure) {
+    return { ...base, status: "token_limited", changed, failureReason: tokenLimitFailure, tokenLimitPattern };
+  }
+  if (completed) {
+    return { ...base, status: "completed", changed: true };
+  }
+  if (noChanges) {
+    return {
+      ...base,
+      status: "no_changes",
+      changed: false,
+      failureReason: "codex exited successfully but made no working-tree changes"
+    };
+  }
+  return {
+    ...base,
+    status: "failed",
     changed,
-    failureReason,
-    tokenLimitPattern
+    failureReason: !requiresChanges
+      ? "codex was not given any review tasks"
+      : `codex exited with code ${execResult.exitCode}: ${execResult.stderr || execResult.all || "unknown error"}`
   };
 }
 

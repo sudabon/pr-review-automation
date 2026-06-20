@@ -6,10 +6,10 @@ export const fixerSchema = z.enum(["codex", "cursor"]);
 export const commandsSchema = z
   .strictObject({
     install: z.string().default("pnpm install"),
-    lint: z.string().default("pnpm run lint"),
-    typecheck: z.string().default("pnpm run typecheck"),
-    test: z.string().default("pnpm run test"),
-    build: z.string().default("pnpm run build")
+    lint: z.string().default("lint"),
+    typecheck: z.string().default("typecheck"),
+    test: z.string().default("test"),
+    build: z.string().default("build")
   })
   .prefault({});
 
@@ -26,11 +26,11 @@ export const configSchema = z.strictObject({
       main_reviewer: z.string().min(1).default("claude"),
       fixers: z.array(fixerSchema).min(1).default(["codex", "cursor"]),
       token_limit_patterns: z
-        .record(z.string(), z.array(z.string()))
-        .default({
-          codex: DEFAULT_TOKEN_LIMIT_PATTERNS,
-          cursor: DEFAULT_TOKEN_LIMIT_PATTERNS
+        .strictObject({
+          codex: z.array(z.string().trim().min(1)).default(DEFAULT_TOKEN_LIMIT_PATTERNS),
+          cursor: z.array(z.string().trim().min(1)).default(DEFAULT_TOKEN_LIMIT_PATTERNS)
         })
+        .prefault({})
     })
     .prefault({}),
   limits: z

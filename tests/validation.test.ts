@@ -60,4 +60,62 @@ describe("validation runner", () => {
       expect(executor.calls).toHaveLength(0);
     });
   });
+
+  it("uses the configured package manager for default bare scripts", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.project.package_manager = "npm";
+      const executor = makeExecutor(() => execResult());
+
+      await runValidation(config, dir, join(dir, "validation"), undefined, executor);
+
+      expect(executor.calls.map((call) => [call.command, ...(call.args ?? [])].join(" "))).toEqual([
+        "npm run lint",
+        "npm run typecheck",
+        "npm run test",
+        "npm run build"
+      ]);
+    });
+  });
+
+  it("explains package-manager mismatches without executing them", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.project.package_manager = "npm";
+      config.commands.lint = "pnpm run lint";
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      const executor = makeExecutor(() => {
+        throw new Error("should not run");
+      });
+
+      const result = await runValidation(config, dir, join(dir, "validation"), undefined, executor);
+
+      expect(result.steps.lint.stderr).toContain('uses package manager "pnpm"');
+      expect(result.steps.lint.stderr).toContain('project.package_manager is "npm"');
+      expect(executor.calls).toHaveLength(0);
+    });
+  });
+
+  it("records timeout and stderr details for failed validation steps", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      const executor = makeExecutor(() =>
+        execResult({ exitCode: 124, timedOut: true, stderr: "lint timed out", all: "lint timed out" })
+      );
+
+      const result = await runValidation(config, dir, join(dir, "validation"), undefined, executor);
+
+      expect(result.steps.lint).toMatchObject({
+        status: "failed",
+        exit_code: 124,
+        timed_out: true,
+        stderr: "lint timed out"
+      });
+    });
+  });
 });

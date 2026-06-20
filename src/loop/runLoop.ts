@@ -57,45 +57,64 @@ const loopStateStatusSchema = z.enum([
 
 export type LoopStateStatus = z.infer<typeof loopStateStatusSchema>;
 
-const loopStateSchema = z
-  .object({
-    run_id: z.string().min(1),
-    status: loopStateStatusSchema,
-    reason: z.string().optional(),
-    current_loop: z.number().int().nonnegative(),
-    max_loops: z.number().int().positive(),
-    worktree_path: z.string().min(1),
-    worktree_mode: z.enum(["worktree", "branch", "current"]).optional(),
-    worktree_branch: z.string().optional(),
-    worktree_original_branch: z.string().optional(),
-    worktree_original_ref: z.string().optional(),
-    final_decision: z.enum(["approved", "needs_changes", "human_review_required"]).optional(),
-    baseline_diff_line_count: z.number().int().nonnegative().optional(),
-    remaining_issues: z.array(remainingIssueSchema),
-    repeated_issues: z.record(z.string(), z.number().int().nonnegative()),
-    failovers: z.array(
-      z
-        .object({
-          from: fixerSchema,
-          to: fixerSchema.optional(),
-          at: z.string(),
-          reason: z.string()
-        })
-        .passthrough()
-    ),
-    history: z.array(
-      z
-        .object({
-          loop: z.number().int().nonnegative(),
-          decision: z.enum(["approved", "needs_changes", "human_review_required"]).optional(),
-          validation: z.enum(["passed", "failed"]).optional(),
-          action: z.enum(["continue", "stop", "only_review", "dry_run"]).optional(),
-          reason: z.string().optional()
-        })
-        .passthrough()
-    )
-  })
-  .passthrough();
+const loopStateCommonShape = {
+  run_id: z.string().min(1),
+  status: loopStateStatusSchema,
+  reason: z.string().optional(),
+  current_loop: z.number().int().nonnegative(),
+  max_loops: z.number().int().positive(),
+  final_decision: z.enum(["approved", "needs_changes", "human_review_required"]).optional(),
+  baseline_diff_line_count: z.number().int().nonnegative().optional(),
+  remaining_issues: z.array(remainingIssueSchema),
+  repeated_issues: z.record(z.string(), z.number().int().nonnegative()),
+  failovers: z.array(
+    z.strictObject({
+      from: fixerSchema,
+      to: fixerSchema.optional(),
+      at: z.string(),
+      reason: z.string()
+    })
+  ),
+  history: z.array(
+    z.strictObject({
+      loop: z.number().int().nonnegative(),
+      decision: z.enum(["approved", "needs_changes", "human_review_required"]).optional(),
+      validation: z.enum(["passed", "failed"]).optional(),
+      action: z.enum(["continue", "stop", "only_review", "dry_run"]).optional(),
+      reason: z.string().optional()
+    })
+  )
+};
+
+const loopStateSchema = z.preprocess(
+  (value) => {
+    if (typeof value === "object" && value !== null && !("worktree_mode" in value)) {
+      return { ...value, worktree_mode: "current" };
+    }
+    return value;
+  },
+  z.discriminatedUnion("worktree_mode", [
+    z.strictObject({
+      ...loopStateCommonShape,
+      worktree_path: z.string().min(1),
+      worktree_mode: z.literal("current")
+    }),
+    z.strictObject({
+      ...loopStateCommonShape,
+      worktree_path: z.string().min(1),
+      worktree_mode: z.literal("worktree"),
+      worktree_branch: z.string().min(1)
+    }),
+    z.strictObject({
+      ...loopStateCommonShape,
+      worktree_path: z.string().min(1),
+      worktree_mode: z.literal("branch"),
+      worktree_branch: z.string().min(1),
+      worktree_original_branch: z.string().min(1).optional(),
+      worktree_original_ref: z.string().min(1).optional()
+    })
+  ])
+);
 
 export type LoopState = z.infer<typeof loopStateSchema>;
 
@@ -315,21 +334,31 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
       if (decision.action === "stop") {
         let resultReason = decision.reason;
         if (decision.success && input.options.commitOnSuccess && input.config.git.commit_on_success) {
-          const commit = await commitChanges(
-            {
-              cwd: worktreePath,
-              commandLogPath: runDirectory.commandLogPath
-            },
-            executor
-          );
-          if (!commit.committed) {
-            resultReason = `${decision.reason} No commit was created because the working tree was clean.`;
+          if (nextState.worktree_mode === "current") {
+            resultReason = `${decision.reason} Automatic commit was skipped because git.use_worktree is false; commit the reviewed changes manually.`;
             const history = [...nextState.history];
             const lastHistory = history.at(-1);
             if (lastHistory) {
               history[history.length - 1] = { ...lastHistory, reason: resultReason };
             }
             await persistState({ ...nextState, reason: resultReason, history });
+          } else {
+            const commit = await commitChanges(
+              {
+                cwd: worktreePath,
+                commandLogPath: runDirectory.commandLogPath
+              },
+              executor
+            );
+            if (!commit.committed) {
+              resultReason = `${decision.reason} No commit was created because the working tree was clean.`;
+              const history = [...nextState.history];
+              const lastHistory = history.at(-1);
+              if (lastHistory) {
+                history[history.length - 1] = { ...lastHistory, reason: resultReason };
+              }
+              await persistState({ ...nextState, reason: resultReason, history });
+            }
           }
         }
 
@@ -376,7 +405,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
       input.cwd,
       state,
       runDirectory.commandLogPath,
-      state.status !== "completed",
+      isResumableStatus(state.status),
       executor
     );
   }
@@ -408,21 +437,34 @@ async function initializeRun(
     executor
   );
 
-  const state: LoopState = {
+  const commonState = {
     run_id: runDirectory.runId,
-    status: "running",
+    status: "running" as const,
     current_loop: 0,
     max_loops: input.options.maxLoops,
-    worktree_path: worktree.path,
-    worktree_mode: worktree.mode,
-    worktree_branch: worktree.branchName,
-    worktree_original_branch: worktree.originalBranch,
-    worktree_original_ref: worktree.originalRef,
     remaining_issues: [],
     repeated_issues: {},
     failovers: [],
     history: []
   };
+  const state: LoopState =
+    worktree.mode === "current"
+      ? { ...commonState, worktree_path: worktree.path, worktree_mode: "current" }
+      : worktree.mode === "worktree"
+        ? {
+            ...commonState,
+            worktree_path: worktree.path,
+            worktree_mode: "worktree",
+            worktree_branch: worktree.branchName!
+          }
+        : {
+            ...commonState,
+            worktree_path: worktree.path,
+            worktree_mode: "branch",
+            worktree_branch: worktree.branchName!,
+            worktree_original_branch: worktree.originalBranch,
+            worktree_original_ref: worktree.originalRef
+          };
   await saveLoopState(runDirectory.loopStatePath, state);
   return state;
 }
@@ -467,14 +509,17 @@ async function cleanupLoopWorktree(
   executor: CommandExecutor
 ): Promise<void> {
   try {
+    if (preserveForResume) {
+      console.warn(`[ai-dev-loop] run can be resumed; preserving worktree at ${state.worktree_path}`);
+    }
     await cleanupWorktree(
       {
         cwd,
         mode: state.worktree_mode,
         path: state.worktree_path,
-        branchName: state.worktree_branch,
-        originalBranch: state.worktree_original_branch,
-        originalRef: state.worktree_original_ref,
+        branchName: state.worktree_mode === "current" ? undefined : state.worktree_branch,
+        originalBranch: state.worktree_mode === "branch" ? state.worktree_original_branch : undefined,
+        originalRef: state.worktree_mode === "branch" ? state.worktree_original_ref : undefined,
         preserveForResume,
         commandLogPath
       },
@@ -498,6 +543,10 @@ async function cleanupLoopWorktree(
       console.warn(`[ai-dev-loop] failed to record cleanup failure: ${formatErrorMessage(logError)}`);
     }
   }
+}
+
+function isResumableStatus(status: LoopStateStatus): boolean {
+  return status === "human_review_required";
 }
 
 async function prepareResumeWorktree(

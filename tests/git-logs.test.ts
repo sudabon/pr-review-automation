@@ -91,6 +91,33 @@ describe("git and logs", () => {
       );
 
       expect(result.lineCount).toBe(3);
+      expect(executor.calls.at(-1)?.args).toEqual(["diff", "--binary", "main...feature"]);
+    });
+  });
+
+  it("throws when git status collection fails", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor(() => execResult({ exitCode: 1, stderr: "not a repository" }));
+
+      await expect(
+        collectDiff({ cwd: dir, baseBranch: "main", inputDir: join(dir, "input") }, executor)
+      ).rejects.toThrow("Failed to collect git status: not a repository");
+      expect(executor.calls).toHaveLength(1);
+    });
+  });
+
+  it("throws when git diff collection fails", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor((options) =>
+        options.args?.[0] === "status"
+          ? execResult({ stdout: "## main\n" })
+          : execResult({ exitCode: 1, stderr: "bad revision" })
+      );
+
+      await expect(
+        collectDiff({ cwd: dir, baseBranch: "main", inputDir: join(dir, "input") }, executor)
+      ).rejects.toThrow("Failed to collect git diff: bad revision");
+      expect(executor.calls).toHaveLength(2);
     });
   });
 

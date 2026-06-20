@@ -83,4 +83,36 @@ describe("configuration", () => {
     expect(config.agents.fixers).toEqual(["codex", "cursor"]);
     expect(config.agents.token_limit_patterns.codex.length).toBeGreaterThan(0);
   });
+
+  it("uses package-manager-neutral default validation scripts", async () => {
+    await withTempDir(async (dir) => {
+      const configPath = join(dir, CONFIG_PATH);
+      await mkdir(dirname(configPath), { recursive: true });
+      await writeFile(configPath, "project:\n  package_manager: npm\n", "utf8");
+
+      const config = await loadConfig(dir);
+
+      expect(config.commands).toMatchObject({ lint: "lint", typecheck: "typecheck", test: "test", build: "build" });
+    });
+  });
+
+  it("rejects unknown token-limit pattern keys", async () => {
+    await withTempDir(async (dir) => {
+      const configPath = join(dir, CONFIG_PATH);
+      await mkdir(dirname(configPath), { recursive: true });
+      await writeFile(configPath, "agents:\n  token_limit_patterns:\n    codexx:\n      - ''\n", "utf8");
+
+      await expect(loadConfig(dir)).rejects.toThrow("Unrecognized key");
+    });
+  });
+
+  it("rejects empty token-limit patterns", async () => {
+    await withTempDir(async (dir) => {
+      const configPath = join(dir, CONFIG_PATH);
+      await mkdir(dirname(configPath), { recursive: true });
+      await writeFile(configPath, "agents:\n  token_limit_patterns:\n    codex:\n      - '   '\n", "utf8");
+
+      await expect(loadConfig(dir)).rejects.toThrow("agents.token_limit_patterns.codex.0");
+    });
+  });
 });

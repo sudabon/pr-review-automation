@@ -20,4 +20,17 @@ describe("execWithTimeout", () => {
       })
     ).rejects.toThrow();
   });
+
+  it("reports signal termination as a non-zero failure", async () => {
+    const result = await execWithTimeout({
+      command: process.execPath,
+      args: ["-e", "process.kill(process.pid, 'SIGTERM')"]
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      timedOut: false,
+      signal: "SIGTERM"
+    });
+  });
 });

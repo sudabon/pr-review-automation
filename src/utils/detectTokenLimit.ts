@@ -1,4 +1,4 @@
-import type { Config } from "../config/schema.js";
+import type { Config, FixerName } from "../config/schema.js";
 import type { ExecResult } from "./execWithTimeout.js";
 
 export const DEFAULT_TOKEN_LIMIT_PATTERNS = [
@@ -17,7 +17,7 @@ export const DEFAULT_TOKEN_LIMIT_PATTERNS = [
 
 export interface DetectTokenLimitInput {
   result: Pick<ExecResult, "exitCode" | "stdout" | "stderr" | "all">;
-  fixer?: string;
+  fixer?: FixerName;
   config?: Config;
   patterns?: string[];
 }

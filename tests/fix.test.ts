@@ -156,7 +156,7 @@ describe("fix runners", () => {
     });
   });
 
-  it("returns no_changes when a successful fixer makes no working-tree changes", async () => {
+  it("fails over on no_changes and returns it only after the final fixer", async () => {
     await withTempDir(async (dir) => {
       const executor = makeExecutor((options) =>
         options.command === "git" ? execResult() : execResult({ stdout: "nothing to apply" })
@@ -176,8 +176,12 @@ describe("fix runners", () => {
 
       expect(result).toMatchObject({
         status: "no_changes",
+        activeFixer: "cursor",
         reason: expect.stringContaining("made no working-tree changes")
       });
+      expect(result.attempts).toHaveLength(2);
+      expect(result.failovers).toHaveLength(1);
+      expect(executor.calls.some((call) => call.command === "agent")).toBe(true);
     });
   });
 

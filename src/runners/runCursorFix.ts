@@ -69,21 +69,32 @@ export async function runCursorFix(
     execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && changed && !tokenLimitPattern;
   const noChanges =
     execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && !changed && !tokenLimitPattern;
-  const failureReason = tokenLimitFailure
-    ? tokenLimitFailure
-    : !requiresChanges
-      ? "cursor was not given any review tasks"
-      : execResult.exitCode === 0 && !execResult.timedOut && !changed
-        ? "cursor exited successfully but made no working-tree changes"
-        : undefined;
-  return {
-    fixer: "cursor",
-    status: tokenLimitPattern ? "token_limited" : completed ? "completed" : noChanges ? "no_changes" : "failed",
+  const base = {
+    fixer: "cursor" as const,
     promptPath,
     outputPath,
-    execResult,
+    execResult
+  };
+  if (tokenLimitPattern && tokenLimitFailure) {
+    return { ...base, status: "token_limited", changed, failureReason: tokenLimitFailure, tokenLimitPattern };
+  }
+  if (completed) {
+    return { ...base, status: "completed", changed: true };
+  }
+  if (noChanges) {
+    return {
+      ...base,
+      status: "no_changes",
+      changed: false,
+      failureReason: "cursor exited successfully but made no working-tree changes"
+    };
+  }
+  return {
+    ...base,
+    status: "failed",
     changed,
-    failureReason,
-    tokenLimitPattern
+    failureReason: !requiresChanges
+      ? "cursor was not given any review tasks"
+      : `cursor exited with code ${execResult.exitCode}: ${execResult.stderr || execResult.all || "unknown error"}`
   };
 }

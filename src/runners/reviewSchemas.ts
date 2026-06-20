@@ -34,7 +34,13 @@ const remainingIssueObjectSchema = z
     message: "A remaining issue must include a non-empty title or description."
   });
 
-export const remainingIssueSchema = z.union([z.string(), remainingIssueObjectSchema]);
+const remainingIssueStringSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .transform((description) => ({ severity: "major" as const, description }));
+
+export const remainingIssueSchema = z.union([remainingIssueStringSchema, remainingIssueObjectSchema]);
 
 export const finalResultSchema = z.strictObject({
   decision: z.enum(["approved", "needs_changes", "human_review_required"]),
@@ -45,13 +51,14 @@ export const finalResultSchema = z.strictObject({
 export type ReviewJson = z.infer<typeof reviewSchema>;
 export type ReviewTask = z.infer<typeof reviewTaskSchema>;
 export type FinalResult = z.infer<typeof finalResultSchema>;
-export type RemainingIssue = z.infer<typeof remainingIssueSchema>;
+export type RemainingIssue = z.input<typeof remainingIssueSchema>;
+export type NormalizedRemainingIssue = z.output<typeof remainingIssueSchema>;
 
 export function hasImportantIssues(issues: RemainingIssue[]): boolean {
   return issues.some((issue) => {
     if (typeof issue === "string") {
       return issue.trim().length > 0;
     }
-    return ["blocker", "critical", "major"].includes(issue.severity);
+    return ["blocker", "critical", "major"].includes(issue.severity ?? "major");
   });
 }
