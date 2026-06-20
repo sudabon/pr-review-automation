@@ -54,6 +54,35 @@ describe("git and logs", () => {
     });
   });
 
+  it("counts only changed hunk lines and ignores binary patch payloads", async () => {
+    await withTempDir(async (dir) => {
+      const patch = [
+        "diff --git a/a.ts b/a.ts",
+        "--- a/a.ts",
+        "+++ b/a.ts",
+        "@@ -1,2 +1,2 @@",
+        "-old",
+        "+new",
+        "++++added content beginning with plus signs",
+        " unchanged",
+        "diff --git a/image.png b/image.png",
+        "GIT binary patch",
+        "literal 12345",
+        "zcmV;429payload"
+      ].join("\n");
+      const executor = makeExecutor((options) =>
+        options.args?.[0] === "status" ? execResult({ stdout: "## main\n" }) : execResult({ stdout: patch })
+      );
+
+      const result = await collectDiff(
+        { cwd: dir, baseBranch: "main", targetBranch: "feature", inputDir: join(dir, "input") },
+        executor
+      );
+
+      expect(result.lineCount).toBe(3);
+    });
+  });
+
   it("fails commit tracking when HEAD cannot be resolved", async () => {
     await withTempDir(async (dir) => {
       const executor = makeExecutor((options) => {

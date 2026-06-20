@@ -7,6 +7,7 @@ import { commitChanges } from "../git/commitChanges.js";
 import { ensureGitRepository, ensureRequiredCliCommands } from "../git/checks.js";
 import { cleanupWorktree, createWorktree, type WorktreeResult } from "../git/createWorktree.js";
 import { createRunDirectory, getRunDirectory, type RunDirectory } from "../logs/createRunDirectory.js";
+import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { runClaudeFinalReview } from "../runners/runClaudeFinalReview.js";
 import { runClaudeReview } from "../runners/runClaudeReview.js";
 import { runFix, type FixFailover } from "../runners/runFix.js";
@@ -397,7 +398,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
       input.cwd,
       state,
       runDirectory.commandLogPath,
-      !["completed", "approved"].includes(state.status),
+      state.status !== "completed",
       executor
     );
   }
@@ -501,8 +502,23 @@ async function cleanupLoopWorktree(
       },
       executor
     );
-  } catch {
+  } catch (error) {
     // Cleanup is best-effort so it does not mask the loop result.
+    const reason = formatErrorMessage(error);
+    console.warn(`[ai-dev-loop] cleanup failed: ${reason}`);
+    try {
+      const at = new Date().toISOString();
+      await writeCommandLog(commandLogPath, {
+        command: "cleanup worktree",
+        event: "cleanup_failed",
+        reason,
+        started_at: at,
+        ended_at: at,
+        exit_code: 1
+      });
+    } catch (logError) {
+      console.warn(`[ai-dev-loop] failed to record cleanup failure: ${formatErrorMessage(logError)}`);
+    }
   }
 }
 

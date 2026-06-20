@@ -73,8 +73,29 @@ export async function collectDiff(
     diff,
     status: statusResult.stdout,
     isEmpty: diff.trim().length === 0,
-    lineCount: diff.trim() ? diff.split(/\r?\n/).length : 0
+    lineCount: countChangedLines(diff)
   };
+}
+
+function countChangedLines(diff: string): number {
+  let inHunk = false;
+  let count = 0;
+
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("@@ ")) {
+      inHunk = true;
+      continue;
+    }
+    if (line.startsWith("diff --git ") || line.startsWith("GIT binary patch")) {
+      inHunk = false;
+      continue;
+    }
+    if (inHunk && (line.startsWith("+") || line.startsWith("-"))) {
+      count += 1;
+    }
+  }
+
+  return count;
 }
 
 async function collectOptionalDiff(

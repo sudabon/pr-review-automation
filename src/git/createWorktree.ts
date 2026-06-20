@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Config } from "../config/schema.js";
+import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
 
 export interface WorktreeResult {
@@ -49,6 +50,27 @@ export async function createWorktree(
     return { mode: "worktree", path: worktreePath, branchName };
   }
 
+  const fallbackReason = addResult.stderr || addResult.all || `git exited with code ${addResult.exitCode}`;
+  const warning = `git worktree add failed; falling back to a temporary branch in the current working tree: ${fallbackReason}`;
+  console.warn(`[ai-dev-loop] ${warning}`);
+  if (commandLogPath) {
+    try {
+      const at = new Date().toISOString();
+      await writeCommandLog(commandLogPath, {
+        command: "git worktree fallback",
+        event: "worktree_fallback",
+        reason: warning,
+        started_at: at,
+        ended_at: at,
+        exit_code: addResult.exitCode
+      });
+    } catch (error) {
+      console.warn(
+        `[ai-dev-loop] failed to record worktree fallback: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
   const originalBranchResult = await executor({
     command: "git",
     args: ["branch", "--show-current"],
@@ -91,6 +113,10 @@ export async function cleanupWorktree(
   input: CleanupWorktreeInput,
   executor: CommandExecutor = execWithTimeout
 ): Promise<void> {
+  if (input.preserveForResume) {
+    return;
+  }
+
   if (input.mode === "branch") {
     const restoreArgs = input.originalBranch
       ? ["switch", input.originalBranch]
@@ -112,7 +138,7 @@ export async function cleanupWorktree(
     return;
   }
 
-  if (input.mode !== "worktree" || input.preserveForResume) {
+  if (input.mode !== "worktree") {
     return;
   }
 

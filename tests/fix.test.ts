@@ -82,6 +82,9 @@ describe("fix runners", () => {
 
       expect(result.status).toBe("completed");
       expect(result.activeFixer).toBe("codex");
+      const codexCall = executor.calls.find((call) => call.command === "codex");
+      expect(codexCall?.input).toContain("major-1");
+      expect(codexCall?.args).not.toContain(codexCall?.input);
       const prompt = await readFile(join(dir, "fix", "codex-prompt.md"), "utf8");
       expect(prompt.indexOf("major-1")).toBeLessThan(prompt.indexOf("minor-1"));
     });
@@ -119,7 +122,8 @@ describe("fix runners", () => {
       expect(result.failovers).toHaveLength(1);
       const commandLog = await readFile(join(dir, "meta", "command-log.jsonl"), "utf8");
       expect(commandLog).toContain('"event":"token_limit_detected"');
-      expect(commandLog).toContain('"reason":"quota exceeded"');
+      expect(commandLog).toContain("codex exited with code 1");
+      expect(commandLog).toContain("stderr: quota exceeded");
     });
   });
 
@@ -174,6 +178,53 @@ describe("fix runners", () => {
     });
   });
 
+  it("skips fixer execution when the review contains no tasks", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor(() => {
+        throw new Error("fixer must not run without review tasks");
+      });
+      const result = await runFix(
+        {
+          config: createDefaultConfig("demo"),
+          cwd: dir,
+          fixDir: join(dir, "fix"),
+          review: { summary: "nothing actionable", overall_risk: "low", tasks: [] },
+          reviewJsonPath: "review.json",
+          dryRun: false
+        },
+        executor
+      );
+
+      expect(result).toMatchObject({ status: "skipped", reason: expect.stringContaining("No review tasks") });
+      expect(executor.calls).toHaveLength(0);
+      expect(await readFile(result.outputPaths[0]!, "utf8")).toContain("fixer execution skipped");
+    });
+  });
+
+  it("throws a specific error when a fixer times out", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor((options) =>
+        options.command === "git"
+          ? execResult()
+          : execResult({ exitCode: 124, timedOut: true, stderr: "timed out", all: "timed out" })
+      );
+
+      await expect(
+        runFix(
+          {
+            config: createDefaultConfig("demo"),
+            cwd: dir,
+            fixDir: join(dir, "fix"),
+            review,
+            reviewJsonPath: "review.json",
+            dryRun: false
+          },
+          executor
+        )
+      ).rejects.toThrow("codex fixer timed out");
+    });
+  });
+
   it("detects content changes when an already-modified file keeps the same porcelain status", async () => {
     await withTempDir(async (dir) => {
       let diff = "before";
@@ -210,7 +261,7 @@ describe("fix runners", () => {
       const executor = makeExecutor((options) =>
         options.command === "git"
           ? execResult()
-          : execResult({ exitCode: 1, stderr: "rate limit", all: "rate limit" })
+          : execResult({ exitCode: 1, stderr: "rate limit exceeded", all: "rate limit exceeded" })
       );
       const result = await runFix(
         {
@@ -226,6 +277,7 @@ describe("fix runners", () => {
 
       expect(result.status).toBe("human_review_required");
       expect(result.failovers).toHaveLength(2);
+      expect(result.reason).toContain("exited with code 1");
     });
   });
 
@@ -241,7 +293,15 @@ describe("fix runners", () => {
     ).toBe(true);
   });
 
-  it("does not treat stdout-only 429 text as a token limit when stderr has the real failure", () => {
+  it("detects a token-limit message emitted only on stdout", () => {
+    expect(
+      detectTokenLimit({
+        result: execResult({ exitCode: 1, stdout: "quota exceeded", stderr: "" })
+      })
+    ).toBe(true);
+  });
+
+  it("does not treat an unrelated 429 location as a token limit", () => {
     expect(
       detectTokenLimit({
         result: execResult({

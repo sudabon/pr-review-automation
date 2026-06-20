@@ -5,6 +5,7 @@ import { createDefaultConfig } from "../src/config/schema.js";
 import { runClaudeFinalReview } from "../src/runners/runClaudeFinalReview.js";
 import { runClaudeReview } from "../src/runners/runClaudeReview.js";
 import { finalResultSchema } from "../src/runners/reviewSchemas.js";
+import { extractJsonObject } from "../src/utils/safeJsonParse.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 
 const reviewJson = {
@@ -47,6 +48,8 @@ describe("review runners", () => {
       );
 
       expect(result.review.tasks[0]?.severity).toBe("major");
+      expect(executor.calls[0]?.input).toContain("/review-pr");
+      expect(executor.calls[0]?.args).not.toContain(executor.calls[0]?.input);
       expect(await readFile(result.markdownPath, "utf8")).toContain("Review complete");
       expect(await readFile(result.reviewJsonPath, "utf8")).toContain("Found one issue");
       expect(await readFile(join(dir, "meta", "command-log.jsonl"), "utf8")).toContain('"event":"json_fallback"');
@@ -74,6 +77,14 @@ describe("review runners", () => {
         )
       ).rejects.toThrow("Invalid Claude review JSON");
     });
+  });
+
+  it("extracts the first valid object from multiple JSON candidates", () => {
+    const extracted = extractJsonObject(
+      `Explanation with {not json}.\n\`\`\`json\n{broken}\n\`\`\`\n\`\`\`json\n${JSON.stringify(reviewJson)}\n\`\`\``
+    );
+
+    expect(extracted).toEqual({ ok: true, value: reviewJson });
   });
 
   it("rejects empty remaining-issue objects", () => {

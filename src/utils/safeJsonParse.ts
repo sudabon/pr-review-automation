@@ -14,19 +14,63 @@ export function safeJsonParse<T = unknown>(input: string): SafeJsonParseResult<T
 }
 
 export function extractJsonObject(input: string): SafeJsonParseResult<unknown> {
-  const fenced = input.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) {
-    const parsed = safeJsonParse(fenced[1].trim());
+  const direct = safeJsonParse(input.trim());
+  if (direct.ok) {
+    return direct;
+  }
+
+  const fencedBlocks = input.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi);
+  for (const fenced of fencedBlocks) {
+    const parsed = safeJsonParse(fenced[1]?.trim() ?? "");
     if (parsed.ok) {
       return parsed;
     }
   }
 
-  const firstBrace = input.indexOf("{");
-  const lastBrace = input.lastIndexOf("}");
-  if (firstBrace === -1 || lastBrace <= firstBrace) {
-    return { ok: false, error: new Error("No JSON object found in output") };
+  for (const candidate of findJsonObjectCandidates(input)) {
+    const parsed = safeJsonParse(candidate);
+    if (parsed.ok) {
+      return parsed;
+    }
   }
 
-  return safeJsonParse(input.slice(firstBrace, lastBrace + 1));
+  return { ok: false, error: new Error("No valid JSON object found in output") };
+}
+
+function findJsonObjectCandidates(input: string): string[] {
+  const candidates: string[] = [];
+
+  for (let start = input.indexOf("{"); start !== -1; start = input.indexOf("{", start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start; index < input.length; index += 1) {
+      const character = input[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (character === "\\") {
+          escaped = true;
+        } else if (character === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (character === '"') {
+        inString = true;
+      } else if (character === "{") {
+        depth += 1;
+      } else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(input.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+  }
+
+  return candidates;
 }

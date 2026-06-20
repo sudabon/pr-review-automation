@@ -4,13 +4,15 @@ import type { ExecResult } from "./execWithTimeout.js";
 export const DEFAULT_TOKEN_LIMIT_PATTERNS = [
   "token limit",
   "quota exceeded",
-  "rate limit",
-  "rate_limit",
+  "rate limit exceeded",
+  "rate_limit_exceeded",
+  "rate_limit_error",
   "context length",
   "maximum context",
   "usage limit",
   "too many requests",
-  "429"
+  "http 429",
+  "status code 429"
 ];
 
 export interface DetectTokenLimitInput {
@@ -34,7 +36,11 @@ export function detectTokenLimitPattern(input: DetectTokenLimitInput): string | 
       ? input.config.agents.token_limit_patterns[input.fixer] ?? []
       : [];
   const patterns = [...DEFAULT_TOKEN_LIMIT_PATTERNS, ...configured, ...(input.patterns ?? [])];
-  const haystack = input.result.stderr.trim().slice(-4_000).toLowerCase();
+  const haystack = [input.result.stdout, input.result.stderr, input.result.all]
+    .map((output) => output.trim().slice(-4_000))
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
 
   return patterns.find((pattern) => {
     const normalizedPattern = pattern.trim().toLowerCase();

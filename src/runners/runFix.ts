@@ -59,6 +59,19 @@ export async function runFix(
     };
   }
 
+  if (input.review.tasks.length === 0) {
+    const noTasksPath = join(input.fixDir, "no-tasks.txt");
+    const reason = "No review tasks were produced; fixer execution skipped.";
+    await writeFile(noTasksPath, `${reason}\n`, "utf8");
+    return {
+      status: "skipped",
+      outputPaths: [noTasksPath],
+      attempts: [],
+      failovers: [],
+      reason
+    };
+  }
+
   const review = prioritizeReview(input.review);
   const attempts: FixRunnerResult[] = [];
   const failovers: FixFailover[] = [];
@@ -84,13 +97,15 @@ export async function runFix(
     const nextFixer = input.config.agents.fixers[index + 1];
 
     if (attempt.status === "token_limited" && nextFixer) {
-      const reason = "token_limit";
+      const reason = attempt.failureReason ?? "token_limit";
       failovers.push(await recordFailover(input.commandLogPath, fixer, nextFixer, reason));
       continue;
     }
 
     if (attempt.status === "token_limited") {
-      failovers.push(await recordFailover(input.commandLogPath, fixer, undefined, "token_limit"));
+      failovers.push(
+        await recordFailover(input.commandLogPath, fixer, undefined, attempt.failureReason ?? "token_limit")
+      );
       continue;
     }
 
@@ -117,7 +132,7 @@ export async function runFix(
     outputPaths: attempts.map((item) => item.outputPath),
     attempts,
     failovers,
-    reason: "All configured fixers reported token limits."
+    reason: `All configured fixers reported token limits.${attempts.at(-1)?.failureReason ? ` ${attempts.at(-1)?.failureReason}` : ""}`
   };
 }
 

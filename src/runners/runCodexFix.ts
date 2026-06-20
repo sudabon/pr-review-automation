@@ -44,7 +44,8 @@ export async function runCodexFix(
 
   const execResult = await executor({
     command: input.config.codex.command,
-    args: [...input.config.codex.args, prompt],
+    args: input.config.codex.args,
+    input: prompt,
     cwd: input.cwd,
     timeoutMs: input.config.codex.timeout_sec * 1000,
     outputPath,
@@ -55,13 +56,16 @@ export async function runCodexFix(
   const tokenLimitPattern = execResult.timedOut
     ? undefined
     : detectTokenLimitPattern({ result: execResult, fixer: "codex", config: input.config });
+  const tokenLimitFailure = tokenLimitPattern
+    ? formatTokenLimitFailure("codex", execResult, tokenLimitPattern)
+    : undefined;
 
-  if (tokenLimitPattern && input.commandLogPath) {
+  if (tokenLimitFailure && input.commandLogPath) {
     const at = new Date().toISOString();
     await writeCommandLog(input.commandLogPath, {
       command: "token-limit-detected codex",
       event: "token_limit_detected",
-      reason: tokenLimitPattern,
+      reason: tokenLimitFailure,
       started_at: at,
       ended_at: at,
       exit_code: execResult.exitCode
@@ -69,7 +73,14 @@ export async function runCodexFix(
   }
 
   const requiresChanges = input.review.tasks.length > 0;
-  const completed = execResult.exitCode === 0 && !execResult.timedOut && (changed || !requiresChanges);
+  const completed = execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && changed;
+  const failureReason = tokenLimitFailure
+    ? tokenLimitFailure
+    : !requiresChanges
+      ? "codex was not given any review tasks"
+      : execResult.exitCode === 0 && !execResult.timedOut && !changed
+        ? "codex exited successfully but made no working-tree changes"
+        : undefined;
   return {
     fixer: "codex",
     status: completed ? "completed" : tokenLimitPattern ? "token_limited" : "failed",
@@ -77,12 +88,14 @@ export async function runCodexFix(
     outputPath,
     execResult,
     changed,
-    failureReason:
-      execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && !changed
-        ? "codex exited successfully but made no working-tree changes"
-        : undefined,
+    failureReason,
     tokenLimitPattern
   };
+}
+
+export function formatTokenLimitFailure(fixer: string, result: ExecResult, pattern: string): string {
+  const stderrTail = result.stderr.trim().slice(-1_000);
+  return `${fixer} exited with code ${result.exitCode}; token limit matched "${pattern}"${stderrTail ? `; stderr: ${stderrTail}` : ""}`;
 }
 
 export async function readWorkingTreeSnapshot(

@@ -6,7 +6,7 @@ import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { detectTokenLimitPattern } from "../utils/detectTokenLimit.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
 import type { ReviewJson } from "./reviewSchemas.js";
-import { readWorkingTreeSnapshot, type FixRunnerResult } from "./runCodexFix.js";
+import { formatTokenLimitFailure, readWorkingTreeSnapshot, type FixRunnerResult } from "./runCodexFix.js";
 
 export interface CursorFixRunnerInput {
   config: Config;
@@ -36,7 +36,8 @@ export async function runCursorFix(
 
   const execResult = await executor({
     command: input.config.cursor.command,
-    args: [...input.config.cursor.args, prompt],
+    args: input.config.cursor.args,
+    input: prompt,
     cwd: input.cwd,
     timeoutMs: input.config.cursor.timeout_sec * 1000,
     outputPath,
@@ -47,13 +48,16 @@ export async function runCursorFix(
   const tokenLimitPattern = execResult.timedOut
     ? undefined
     : detectTokenLimitPattern({ result: execResult, fixer: "cursor", config: input.config });
+  const tokenLimitFailure = tokenLimitPattern
+    ? formatTokenLimitFailure("cursor", execResult, tokenLimitPattern)
+    : undefined;
 
-  if (tokenLimitPattern && input.commandLogPath) {
+  if (tokenLimitFailure && input.commandLogPath) {
     const at = new Date().toISOString();
     await writeCommandLog(input.commandLogPath, {
       command: "token-limit-detected cursor",
       event: "token_limit_detected",
-      reason: tokenLimitPattern,
+      reason: tokenLimitFailure,
       started_at: at,
       ended_at: at,
       exit_code: execResult.exitCode
@@ -61,7 +65,14 @@ export async function runCursorFix(
   }
 
   const requiresChanges = input.review.tasks.length > 0;
-  const completed = execResult.exitCode === 0 && !execResult.timedOut && (changed || !requiresChanges);
+  const completed = execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && changed;
+  const failureReason = tokenLimitFailure
+    ? tokenLimitFailure
+    : !requiresChanges
+      ? "cursor was not given any review tasks"
+      : execResult.exitCode === 0 && !execResult.timedOut && !changed
+        ? "cursor exited successfully but made no working-tree changes"
+        : undefined;
   return {
     fixer: "cursor",
     status: completed ? "completed" : tokenLimitPattern ? "token_limited" : "failed",
@@ -69,10 +80,7 @@ export async function runCursorFix(
     outputPath,
     execResult,
     changed,
-    failureReason:
-      execResult.exitCode === 0 && !execResult.timedOut && requiresChanges && !changed
-        ? "cursor exited successfully but made no working-tree changes"
-        : undefined,
+    failureReason,
     tokenLimitPattern
   };
 }

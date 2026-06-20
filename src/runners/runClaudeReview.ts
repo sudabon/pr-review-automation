@@ -42,7 +42,8 @@ export async function runClaudeReview(
 
   const result = await executor({
     command: input.config.claude.command,
-    args: [...input.config.claude.args, prompt],
+    args: input.config.claude.args,
+    input: prompt,
     cwd: input.cwd,
     timeoutMs: input.config.claude.timeout_sec * 1000,
     outputPath: markdownPath,
