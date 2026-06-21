@@ -51,8 +51,8 @@ TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after arch
 - **THEN** 差分収集・安全策チェック・Claude レビュー・Cursor 修正・Codex 修正・検証・Claude 最終レビューがこの順序で実行される
 
 #### Scenario: failover モード
-- **WHEN** `fixer_mode` が failover で Codex が正常完了する
-- **THEN** Cursor 修正はスキップされ、検証フェーズに進む
+- **WHEN** `fixer_mode` が failover で Cursor が正常完了する
+- **THEN** Codex 修正はスキップされ、検証フェーズに進む
 
 #### Scenario: only-review モード
 - **WHEN** `--only-review` を指定して実行する

@@ -18,8 +18,8 @@ TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after arch
 - **THEN** Cursor 修正の後に Codex 修正が実行される
 
 #### Scenario: failover モードでの先頭のみ実行
-- **WHEN** `fixer_mode` が failover で Codex が正常完了する
-- **THEN** Cursor は実行されない
+- **WHEN** `fixer_mode` が failover で Cursor が正常完了する
+- **THEN** Codex は実行されない
 
 #### Scenario: 既定の担当順
 - **WHEN** 修正フェーズが開始され `agents.fixers` が未指定（既定）である
@@ -28,9 +28,9 @@ TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after arch
 ### Requirement: トークン超過時の自動担当者交代
 active fixer の CLI がサブスクリプションのトークン超過（クォータ超過・レート上限）を示した場合、システムは自動的に優先順位の次のエージェントへ担当を交代（フェイルオーバー）し、未対応のコメントから修正を継続しなければならない（SHALL）。担当交代の事実（交代元・交代先・時刻・理由）を run の記録（`meta/loop-state.json` または `meta/command-log.jsonl`）に残さなければならない（SHALL）。優先順位の全エージェントがトークン超過に達した場合、システムは修正を停止し、人間レビューへ差し戻さなければならない（SHALL）。
 
-#### Scenario: Codex のトークン超過で Cursor へ交代
-- **WHEN** active fixer の Codex がトークン超過を示す
-- **THEN** 担当が自動的に Cursor Agent へ交代し、未対応コメントの修正が継続され、交代が記録される
+#### Scenario: Cursor のトークン超過で Codex へ交代
+- **WHEN** active fixer の Cursor がトークン超過を示す
+- **THEN** 担当が自動的に Codex へ交代し、未対応コメントの修正が継続され、交代が記録される
 
 #### Scenario: 全担当がトークン超過
 - **WHEN** Codex と Cursor の両方がトークン超過に達する
