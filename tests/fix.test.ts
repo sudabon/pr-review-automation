@@ -247,6 +247,40 @@ describe("fix runners", () => {
     });
   });
 
+  it("runs Cursor before Codex in sequential mode with default fixers", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixer_mode = "sequential";
+      let status = "";
+      const executor = makeExecutor((options) => {
+        if (options.command === "git") {
+          return execResult({ stdout: status });
+        }
+        status = " M src/a.ts\n";
+        return execResult({ stdout: "fixed", all: "fixed" });
+      });
+
+      const result = await runFix(
+        {
+          config,
+          cwd: dir,
+          fixDir: join(dir, "fix"),
+          review,
+          reviewJsonPath: "review.json",
+          dryRun: false
+        },
+        executor
+      );
+
+      expect(result.status).toBe("completed");
+      const agentIndex = executor.calls.findIndex((call) => call.command === "agent");
+      const codexIndex = executor.calls.findIndex((call) => call.command === "codex");
+      expect(agentIndex).toBeGreaterThanOrEqual(0);
+      expect(codexIndex).toBeGreaterThanOrEqual(0);
+      expect(agentIndex).toBeLessThan(codexIndex);
+    });
+  });
+
   it("preserves codex changes when cursor times out in sequential mode", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
