@@ -37,7 +37,7 @@ const configObjectSchema = z.strictObject({
   agents: z
     .strictObject({
       main_reviewer: z.string().min(1).default("claude"),
-      fixers: z.array(fixerSchema).min(1).default(["codex", "cursor"]),
+      fixers: z.array(fixerSchema).min(1).default(["cursor", "codex"]),
       fixer_mode: fixerModeSchema.default("sequential"),
       token_limit_patterns: z
         .strictObject({

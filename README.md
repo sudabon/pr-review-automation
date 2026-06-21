@@ -4,7 +4,7 @@
 
 1. Git の差分を収集する
 2. Claude にレビューを依頼する
-3. 設定された fixer にレビューコメントの対応を依頼する。既定では Codex → Cursor を各ループで逐次実行する。MVP 互換の先頭 fixer のみ実行は `agents.fixer_mode: failover` を指定する
+3. 設定された fixer にレビューコメントの対応を依頼する。既定では Cursor → Codex を各ループで逐次実行する。MVP 互換の先頭 fixer のみ実行は `agents.fixer_mode: failover` を指定する
 4. 検証コマンドを実行する
 5. Claude に最終判断を依頼する
 6. 承認・停止・人間によるレビューへの引き渡しのいずれかになるまで繰り返す
@@ -80,7 +80,7 @@ pnpm cli run --no-commit
 
 ### fixer_mode
 
-- `sequential`（既定）: 各ループで設定された fixer をすべて順に実行する（Codex → Cursor）
+- `sequential`（既定）: 各ループで設定された fixer をすべて順に実行する（Cursor → Codex）
 - `failover`: 先頭 fixer のみを実行し、トークン上限などの失敗時に次の fixer へ交代する
 
 ### 安全策

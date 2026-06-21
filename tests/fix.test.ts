@@ -85,11 +85,11 @@ describe("fix runners", () => {
       );
 
       expect(result.status).toBe("completed");
-      expect(result.activeFixer).toBe("codex");
-      const codexCall = executor.calls.find((call) => call.command === "codex");
-      expect(codexCall?.input).toContain("major-1");
-      expect(codexCall?.args).not.toContain(codexCall?.input);
-      const prompt = await readFile(join(dir, "fix", "codex-prompt.md"), "utf8");
+      expect(result.activeFixer).toBe("cursor");
+      const cursorCall = executor.calls.find((call) => call.command === "agent");
+      expect(cursorCall?.input).toContain("major-1");
+      expect(cursorCall?.args).not.toContain(cursorCall?.input);
+      const prompt = await readFile(join(dir, "fix", "cursor-prompt.md"), "utf8");
       expect(prompt.indexOf("major-1")).toBeLessThan(prompt.indexOf("minor-1"));
     });
   });
@@ -97,6 +97,7 @@ describe("fix runners", () => {
   it("fails over to Cursor when Codex reports token limits", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
+      config.agents.fixers = ["codex", "cursor"];
       config.agents.fixer_mode = "failover";
       let status = "";
       const executor = makeExecutor((options) => {
@@ -136,6 +137,7 @@ describe("fix runners", () => {
   it("does not fail over when Codex fails normally", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
+      config.agents.fixers = ["codex", "cursor"];
       config.agents.fixer_mode = "failover";
       const executor = makeExecutor((options) => {
         if (options.command === "git") {
@@ -212,12 +214,13 @@ describe("fix runners", () => {
 
       expect(result).toMatchObject({
         status: "no_changes",
-        activeFixer: "cursor",
+        activeFixer: "codex",
         reason: expect.stringContaining("made no working-tree changes")
       });
       expect(result.attempts).toHaveLength(2);
       expect(result.failovers).toHaveLength(1);
       expect(executor.calls.some((call) => call.command === "agent")).toBe(true);
+      expect(executor.calls.some((call) => call.command === "codex")).toBe(true);
     });
   });
 
@@ -247,6 +250,7 @@ describe("fix runners", () => {
   it("preserves codex changes when cursor times out in sequential mode", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
+      config.agents.fixers = ["codex", "cursor"];
       config.agents.fixer_mode = "sequential";
       let status = "";
       const executor = makeExecutor((options) => {
@@ -336,7 +340,7 @@ describe("fix runners", () => {
           },
           executor
         )
-      ).rejects.toThrow("codex fixer timed out");
+      ).rejects.toThrow("cursor fixer timed out");
     });
   });
 
@@ -438,9 +442,12 @@ describe("fix runners", () => {
         throw new Error("Cursor must not run over partial Codex changes");
       });
 
+      const config = createDefaultConfig("demo");
+      config.agents.fixers = ["codex", "cursor"];
+
       const result = await runFix(
         {
-          config: createDefaultConfig("demo"),
+          config,
           cwd: dir,
           fixDir: join(dir, "fix"),
           review,
