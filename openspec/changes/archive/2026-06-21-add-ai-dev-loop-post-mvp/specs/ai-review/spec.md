@@ -1,8 +1,5 @@
-# ai-review Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after archive.
-## Requirements
 ### Requirement: Git 差分の収集
 Claude レビューの前段として、システムは `--base` と作業対象との差分を `git diff` で取得し、`.ai-dev-loopignore` および既定除外パターンでフィルタした結果を `input/diff.patch` に、`git status` を `input/status.txt` に保存しなければならない（SHALL）。差分が空の場合はレビューを実行せず、その旨を記録して正常終了しなければならない（SHALL）。
 
@@ -29,17 +26,6 @@ Claude レビューの前段として、システムは `--base` と作業対象
 - **WHEN** Claude CLI が非ゼロ終了コードで終了する、またはタイムアウトする
 - **THEN** エラーを記録し、当該ループを失敗として扱う
 
-### Requirement: review.json のスキーマ検証
-システムは `review/review.json` が定義スキーマに適合することを検証しなければならない（SHALL）。各タスクは `id` / `severity`（blocker | critical | major | minor | nit）/ `category`（bug | security | type | test | refactor | design | docs）/ `title` / `description` / `files` / `suggested_fix` / `acceptance_criteria` を含み、トップレベルに `summary` と `overall_risk`（low | medium | high）を含まなければならない（SHALL）。スキーマ不適合の場合はエラーとして扱わなければならない（SHALL）。
-
-#### Scenario: 妥当な review.json
-- **WHEN** Claude が生成した `review.json` がスキーマに適合する
-- **THEN** 検証に成功し、修正フェーズへタスクが渡される
-
-#### Scenario: 不正な review.json
-- **WHEN** `review.json` の severity が許可値以外、または必須フィールドが欠落している
-- **THEN** スキーマ検証に失敗し、当該ループを失敗として扱う
-
 ### Requirement: Claude 最終レビューと判定
 修正・検証の後、システムは Claude に初回レビュー・修正後 diff・`validation-result.json`・各 AI の出力ログ（`fix/codex-output.md`、`fix/cursor-output.md`）・`meta/safety-warnings.json`（存在する場合）を渡して最終レビューを依頼しなければならない（SHALL）。最終判定は `final/claude-final-review.md` と `final/final-result.json` に保存し、`final-result.json` の `decision` は `approved` / `needs_changes` / `human_review_required` のいずれかでなければならない（SHALL）。判定には `remaining_issues` と `reason` を含めなければならない（SHALL）。
 
@@ -50,4 +36,3 @@ Claude レビューの前段として、システムは `--base` と作業対象
 #### Scenario: 要修正判定
 - **WHEN** blocker / critical / major の残課題があり、または検証が失敗している
 - **THEN** decision が `needs_changes` となり、remaining_issues に残課題が列挙される
-

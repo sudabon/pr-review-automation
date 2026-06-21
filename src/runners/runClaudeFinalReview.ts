@@ -1,6 +1,6 @@
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { resolveMainReviewerCommand, type Config } from "../config/schema.js";
+import { resolveClaudeFinalReviewTimeoutSec, resolveMainReviewerCommand, type Config } from "../config/schema.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { buildClaudeFinalPrompt } from "../prompts/buildClaudeFinalPrompt.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
@@ -16,6 +16,7 @@ export interface RunClaudeFinalReviewInput {
   finalDir: string;
   fixLogPaths: string[];
   commandLogPath?: string;
+  safetyWarningsPath?: string;
 }
 
 export interface ClaudeFinalReviewResult {
@@ -39,7 +40,8 @@ export async function runClaudeFinalReview(
     validationResultPath: input.validationResultPath,
     diffPath: input.diffPath,
     finalResultPath,
-    fixLogPaths: input.fixLogPaths
+    fixLogPaths: input.fixLogPaths,
+    safetyWarningsPath: input.safetyWarningsPath
   });
   await writeFile(promptPath, prompt, "utf8");
   await rm(finalResultPath, { force: true });
@@ -49,9 +51,10 @@ export async function runClaudeFinalReview(
     args: input.config.claude.args,
     input: prompt,
     cwd: input.cwd,
-    timeoutMs: input.config.claude.timeout_sec * 1000,
+    timeoutMs: resolveClaudeFinalReviewTimeoutSec(input.config) * 1000,
     outputPath: markdownPath,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "claude_final_review"
   });
 
   if (result.exitCode !== 0 || result.timedOut) {
@@ -97,7 +100,8 @@ async function readOrExtractFinalJson(
         reason: `Expected JSON file was not written: ${path}; selected ${extracted.source} candidate ${extracted.candidateIndex}.`,
         started_at: at,
         ended_at: at,
-        exit_code: 0
+        exit_code: 0,
+        step: "claude_final_review"
       });
     }
   }

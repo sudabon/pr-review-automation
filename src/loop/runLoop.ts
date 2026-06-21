@@ -13,7 +13,8 @@ import { runClaudeFinalReview } from "../runners/runClaudeFinalReview.js";
 import { runClaudeReview } from "../runners/runClaudeReview.js";
 import { runFix, type FixFailover } from "../runners/runFix.js";
 import { runValidation } from "../runners/runValidation.js";
-import { remainingIssueSchema } from "../runners/reviewSchemas.js";
+import { remainingIssueSchema, type ReviewJson } from "../runners/reviewSchemas.js";
+import { buildProjectSummary } from "../safety/buildProjectSummary.js";
 import { safeJsonParse } from "../utils/safeJsonParse.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
 import { detectRepeatedIssues } from "./detectRepeatedIssues.js";
@@ -146,6 +147,8 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
     state = nextState;
   };
   let preserveCommittedArtifacts = false;
+  let projectSummaryPath: string | undefined;
+  let configFilePaths: string[] = [];
 
   try {
     for (let loopNumber = startLoop; loopNumber <= maxLoops; loopNumber += 1) {
@@ -159,13 +162,44 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
       const diff = await collectDiff(
         {
           cwd: worktreePath,
+          repoRoot: input.cwd,
           baseBranch: input.options.baseBranch,
           targetBranch: input.options.targetBranch,
           inputDir: runDirectory.inputDir,
-          commandLogPath: runDirectory.commandLogPath
+          commandLogPath: runDirectory.commandLogPath,
+          config: input.config
         },
         executor
       );
+      const safetyStop = diff.safety?.stopReason
+        ? {
+            reason: diff.safety.stopMessage ?? "Safety limits were exceeded.",
+            status: diff.safety.stopReason === "max_diff_lines" ? ("abnormal_diff" as const) : ("human_review_required" as const)
+          }
+        : undefined;
+      if (safetyStop) {
+        const nextState: LoopState = {
+          ...state,
+          status: safetyStop.status,
+          reason: safetyStop.reason,
+          current_loop: loopNumber
+        };
+        await persistState(nextState);
+        return {
+          status: mapInternalStateToExternalStatus(safetyStop.status),
+          reason: safetyStop.reason,
+          runId: runDirectory.runId,
+          runDirectory: runDirectory.root
+        };
+      }
+
+      if (diff.safety?.warnings.length) {
+        await writeFile(
+          join(runDirectory.metaDir, "safety-warnings.json"),
+          JSON.stringify({ warnings: diff.safety.warnings }, null, 2),
+          "utf8"
+        );
+      }
       const baselineDiffLineCount = state.baseline_diff_line_count ?? diff.lineCount;
       if (state.baseline_diff_line_count === undefined) {
         await persistState({ ...state, baseline_diff_line_count: baselineDiffLineCount });
@@ -203,6 +237,15 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         };
       }
 
+      if (!projectSummaryPath) {
+        projectSummaryPath = join(runDirectory.inputDir, "project-summary.md");
+        await buildProjectSummary({ repoRoot: input.cwd, outputPath: projectSummaryPath });
+        configFilePaths = await listExistingConfigFiles(input.cwd);
+      }
+
+      const previousFinalResultPath =
+        loopNumber > 1 ? join(runDirectory.finalDir, "final-result.json") : undefined;
+
       const review = await runClaudeReview(
         {
           config: input.config,
@@ -210,7 +253,13 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
           diffPath: diff.diffPath,
           statusPath: diff.statusPath,
           reviewDir: runDirectory.reviewDir,
-          commandLogPath: runDirectory.commandLogPath
+          commandLogPath: runDirectory.commandLogPath,
+          projectSummaryPath,
+          configFilePaths,
+          previousFinalResultPath:
+            previousFinalResultPath && (await fileExists(previousFinalResultPath))
+              ? previousFinalResultPath
+              : undefined
         },
         executor
       );
@@ -249,6 +298,24 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         return {
           status: "completed",
           reason: "Stopped after Claude review.",
+          runId: runDirectory.runId,
+          runDirectory: runDirectory.root
+        };
+      }
+
+      const preFixSafetyReason = resolvePreFixSafetyReason(diff, review.review);
+      if (preFixSafetyReason) {
+        const nextState: LoopState = {
+          ...state,
+          status: "human_review_required",
+          reason: preFixSafetyReason,
+          current_loop: loopNumber,
+          history: [...state.history, { loop: loopNumber, action: "stop", reason: preFixSafetyReason }]
+        };
+        await persistState(nextState);
+        return {
+          status: mapInternalStateToExternalStatus(LOOP_HUMAN_REVIEW_STATUS),
+          reason: preFixSafetyReason,
           runId: runDirectory.runId,
           runDirectory: runDirectory.root
         };
@@ -329,18 +396,34 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         worktreePath,
         runDirectory.validationDir,
         runDirectory.commandLogPath,
-        executor
+        executor,
+        loopNumber
       );
       const refreshedDiff = await collectDiff(
         {
           cwd: worktreePath,
+          repoRoot: input.cwd,
           baseBranch: input.options.baseBranch,
           targetBranch: input.options.targetBranch,
           inputDir: runDirectory.inputDir,
-          commandLogPath: runDirectory.commandLogPath
+          commandLogPath: runDirectory.commandLogPath,
+          config: input.config
         },
         executor
       );
+      if (refreshedDiff.safety?.warnings.length) {
+        await writeFile(
+          join(runDirectory.metaDir, "safety-warnings.json"),
+          JSON.stringify({ warnings: refreshedDiff.safety.warnings }, null, 2),
+          "utf8"
+        );
+      }
+      const postFixSafetyStop = refreshedDiff.safety?.stopReason
+        ? refreshedDiff.safety.stopMessage ?? "Safety limits were exceeded after fixes."
+        : undefined;
+      const safetyWarningsPath = (await fileExists(join(runDirectory.metaDir, "safety-warnings.json")))
+        ? join(runDirectory.metaDir, "safety-warnings.json")
+        : undefined;
       const final = await runClaudeFinalReview(
         {
           config: input.config,
@@ -350,7 +433,8 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
           diffPath: refreshedDiff.diffPath,
           finalDir: runDirectory.finalDir,
           fixLogPaths: fix.outputPaths,
-          commandLogPath: runDirectory.commandLogPath
+          commandLogPath: runDirectory.commandLogPath,
+          safetyWarningsPath
         },
         executor
       );
@@ -360,7 +444,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         validation.steps.test.status === "failed" ? state.consecutive_test_failures + 1 : 0;
       const allFixersTokenLimited =
         fix.attempts.length > 0 && fix.attempts.every((attempt) => attempt.status === "token_limited");
-      const decision = shouldContinue({
+      let decision = shouldContinue({
         config: input.config,
         loopNumber,
         maxLoops,
@@ -372,6 +456,15 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         allFixersTokenLimited,
         consecutiveTestFailures
       });
+
+      if (postFixSafetyStop && decision.success) {
+        decision = {
+          action: "stop",
+          status: refreshedDiff.safety?.stopReason === "max_diff_lines" ? "abnormal_diff" : "human_review_required",
+          reason: postFixSafetyStop,
+          success: false
+        };
+      }
 
       const nextState: LoopState = {
         ...state,
@@ -424,56 +517,43 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
                 history[history.length - 1] = { ...lastHistory, reason: resultReason };
               }
               await persistState({ ...nextState, reason: resultReason, history });
-            } else if (input.config.git.create_pr_on_success) {
-              let pullRequestFailure: string | undefined;
-              try {
-                const pullRequest = await createPullRequest(
-                  {
-                    cwd: worktreePath,
-                    command: input.config.git.pr_command,
-                    metaDir: runDirectory.metaDir,
-                    commandLogPath: runDirectory.commandLogPath
-                  },
-                  executor
-                );
-                if (pullRequest.status === "created") {
-                  // PR created successfully.
-                } else if (pullRequest.status === "auth_required") {
-                  pullRequestFailure = `Commit succeeded but pull request was not created because GitHub CLI is not authenticated. Run "gh auth login". ${pullRequest.reason}`;
-                } else if (pullRequest.status === "skipped") {
-                  pullRequestFailure = `Commit succeeded but pull request creation was skipped: ${pullRequest.reason}`;
-                } else {
-                  pullRequestFailure = `Commit succeeded but pull request creation failed: ${pullRequest.reason}`;
-                }
-              } catch (error) {
-                pullRequestFailure = `Pull request creation failed: ${formatErrorMessage(error)}`;
-              }
-
-              if (pullRequestFailure) {
-                resultReason = `${decision.reason} ${pullRequestFailure}`;
-                const history = [...nextState.history];
-                const lastHistory = history.at(-1);
-                if (lastHistory) {
-                  history[history.length - 1] = { ...lastHistory, reason: resultReason };
-                }
-                await persistState({
-                  ...nextState,
-                  status: "human_review_required",
-                  reason: resultReason,
-                  history
-                });
-                return {
-                  status: mapInternalStateToExternalStatus(LOOP_HUMAN_REVIEW_STATUS),
-                  reason: resultReason,
-                  runId: runDirectory.runId,
-                  runDirectory: runDirectory.root,
-                  decision
-                };
-              }
             } else {
               preserveCommittedArtifacts = true;
               const artifactHint = formatCommittedArtifactHint(nextState);
               resultReason = artifactHint ? `${decision.reason} ${artifactHint}` : decision.reason;
+
+              if (input.config.git.create_pr_on_success) {
+                try {
+                  const pullRequest = await createPullRequest(
+                    {
+                      cwd: worktreePath,
+                      command: input.config.git.pr_command,
+                      metaDir: runDirectory.metaDir,
+                      commandLogPath: runDirectory.commandLogPath,
+                      finalReviewMarkdownPath: final.markdownPath,
+                      finalResult: final.finalResult
+                    },
+                    executor
+                  );
+                  if (pullRequest.status === "created") {
+                    preserveCommittedArtifacts = false;
+                  } else {
+                    const pullRequestNote =
+                      pullRequest.status === "auth_required"
+                        ? `Pull request was not created because GitHub CLI is not authenticated. Run "gh auth login". ${pullRequest.reason}`
+                        : pullRequest.status === "skipped"
+                          ? `Pull request creation was skipped: ${pullRequest.reason}`
+                          : `Pull request creation failed: ${pullRequest.reason}`;
+                    resultReason = `${resultReason} ${pullRequestNote}`;
+                    console.warn(`[ai-dev-loop] ${pullRequestNote}`);
+                  }
+                } catch (error) {
+                  const pullRequestNote = `Pull request creation failed: ${formatErrorMessage(error)}`;
+                  resultReason = `${resultReason} ${pullRequestNote}`;
+                  console.warn(`[ai-dev-loop] ${pullRequestNote}`);
+                }
+              }
+
               const history = [...nextState.history];
               const lastHistory = history.at(-1);
               if (lastHistory) {
@@ -793,4 +873,48 @@ function formatErrorMessage(error: unknown): string {
 
 function toLoopStateFailovers(failovers: FixFailover[]): LoopState["failovers"] {
   return failovers.map((failover) => ({ ...failover }));
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function listExistingConfigFiles(repoRoot: string): Promise<string[]> {
+  const candidates = [
+    "package.json",
+    "tsconfig.json",
+    "eslint.config.js",
+    "eslint.config.mjs",
+    ".eslintrc",
+    ".eslintrc.json",
+    "vitest.config.ts",
+    "vite.config.ts"
+  ];
+  const existing: string[] = [];
+  for (const candidate of candidates) {
+    if (await fileExists(join(repoRoot, candidate))) {
+      existing.push(join(repoRoot, candidate));
+    }
+  }
+  return existing;
+}
+
+function resolvePreFixSafetyReason(diff: Awaited<ReturnType<typeof collectDiff>>, review: ReviewJson): string | undefined {
+  if (diff.safety?.matchedImportantFiles.length) {
+    return `Important files changed (${diff.safety.matchedImportantFiles.join(", ")}); human review is required before applying fixes.`;
+  }
+
+  const blockerSecurity = review.tasks.find(
+    (task) => task.severity === "blocker" && task.category === "security"
+  );
+  if (blockerSecurity) {
+    return `Blocker security review task ${blockerSecurity.id} requires human review before applying fixes.`;
+  }
+
+  return undefined;
 }

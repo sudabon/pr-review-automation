@@ -2,6 +2,7 @@ import { z } from "zod";
 import { DEFAULT_TOKEN_LIMIT_PATTERNS } from "../utils/detectTokenLimit.js";
 
 export const fixerSchema = z.enum(["codex", "cursor"]);
+export const fixerModeSchema = z.enum(["sequential", "failover"]);
 
 export const commandsSchema = z
   .strictObject({
@@ -12,6 +13,18 @@ export const commandsSchema = z
     build: z.string().default("build")
   })
   .prefault({});
+
+export const DEFAULT_IMPORTANT_FILE_PATTERNS = [
+  ".env",
+  ".env.*",
+  "**/database/migrations/**",
+  "**/migrations/**",
+  "infra/**",
+  "terraform/**",
+  ".github/workflows/**",
+  "auth/**",
+  "payment/**"
+] as const;
 
 const configObjectSchema = z.strictObject({
   project: z
@@ -25,6 +38,7 @@ const configObjectSchema = z.strictObject({
     .strictObject({
       main_reviewer: z.string().min(1).default("claude"),
       fixers: z.array(fixerSchema).min(1).default(["codex", "cursor"]),
+      fixer_mode: fixerModeSchema.default("sequential"),
       token_limit_patterns: z
         .strictObject({
           codex: z.array(z.string().trim().min(1)).default(DEFAULT_TOKEN_LIMIT_PATTERNS),
@@ -37,9 +51,12 @@ const configObjectSchema = z.strictObject({
     .strictObject({
       max_loops: z.number().int().positive().default(3),
       max_same_issue_repeats: z.number().int().positive().default(2),
-      stop_on_validation_failure: z.boolean().default(true),
+      stop_on_validation_failure: z.boolean().default(false),
       abnormal_diff_line_threshold: z.number().int().positive().default(2500),
-      test_failure_degradation_limit: z.number().int().nonnegative().default(2)
+      test_failure_degradation_limit: z.number().int().nonnegative().default(2),
+      max_changed_files: z.number().int().positive().default(50),
+      max_diff_lines: z.number().int().positive().default(5000),
+      lockfile_change_warn_lines: z.number().int().positive().default(200)
     })
     .prefault({}),
   commands: commandsSchema,
@@ -55,11 +72,18 @@ const configObjectSchema = z.strictObject({
       worktree_dir: z.string().default(".ai-dev-loop/worktrees")
     })
     .prefault({}),
+  safety: z
+    .strictObject({
+      important_file_patterns: z.array(z.string().trim().min(1)).default([...DEFAULT_IMPORTANT_FILE_PATTERNS])
+    })
+    .prefault({}),
   claude: z
     .strictObject({
       command: z.string().min(1).default("claude"),
       args: z.array(z.string()).default(["-p"]),
-      timeout_sec: z.number().int().positive().default(1800)
+      timeout_sec: z.number().int().positive().default(1800),
+      review_timeout_sec: z.number().int().positive().optional(),
+      final_review_timeout_sec: z.number().int().positive().optional()
     })
     .prefault({}),
   codex: z
@@ -106,9 +130,18 @@ export type Config = Omit<ParsedConfig, "git"> & {
   };
 };
 export type FixerName = z.infer<typeof fixerSchema>;
+export type FixerMode = z.infer<typeof fixerModeSchema>;
 
 export function resolveMainReviewerCommand(config: Config): string {
   return config.agents.main_reviewer === "claude" ? config.claude.command : config.agents.main_reviewer;
+}
+
+export function resolveClaudeReviewTimeoutSec(config: Config): number {
+  return config.claude.review_timeout_sec ?? config.claude.timeout_sec;
+}
+
+export function resolveClaudeFinalReviewTimeoutSec(config: Config): number {
+  return config.claude.final_review_timeout_sec ?? config.claude.timeout_sec;
 }
 
 export function createDefaultConfig(projectName = "ai-dev-loop-target"): Config {

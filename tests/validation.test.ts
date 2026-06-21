@@ -5,10 +5,15 @@ import { createDefaultConfig } from "../src/config/schema.js";
 import { runValidation } from "../src/runners/runValidation.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 
+function withoutInstall(config = createDefaultConfig("demo")) {
+  config.commands.install = "";
+  return config;
+}
+
 describe("validation runner", () => {
   it("fails validation when every configured command is empty", async () => {
     await withTempDir(async (dir) => {
-      const config = createDefaultConfig("demo");
+      const config = withoutInstall();
       config.commands.lint = "";
       config.commands.typecheck = "";
       config.commands.test = "";
@@ -21,13 +26,14 @@ describe("validation runner", () => {
 
       expect(result.status).toBe("failed");
       expect(result.all_steps_skipped).toBe(true);
+      expect(result.allPassed).toBe(false);
       expect(executor.calls).toHaveLength(0);
     });
   });
 
   it("runs validation commands in order, records failures, and skips empty commands", async () => {
     await withTempDir(async (dir) => {
-      const config = createDefaultConfig("demo");
+      const config = withoutInstall();
       config.commands.lint = "pnpm run lint";
       config.commands.typecheck = "typecheck";
       config.commands.test = "";
@@ -43,6 +49,7 @@ describe("validation runner", () => {
       const result = await runValidation(config, dir, join(dir, "validation"), undefined, executor);
 
       expect(result.status).toBe("failed");
+      expect(result.allPassed).toBe(false);
       expect(result.stop_on_validation_failure).toBe(false);
       expect(result.steps.lint.status).toBe("passed");
       expect(result.steps.typecheck.status).toBe("failed");
@@ -59,9 +66,37 @@ describe("validation runner", () => {
     });
   });
 
-  it("rejects unsafe validation commands without invoking a shell", async () => {
+  it("runs install only on the first loop", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
+      config.commands.test = "";
+      config.commands.build = "";
+      const executor = makeExecutor(() => execResult());
+
+      await runValidation(config, dir, join(dir, "validation"), undefined, executor, 1);
+      expect(executor.calls.map((call) => call.step)).toContain("validation_install");
+
+      executor.calls.length = 0;
+      await runValidation(config, dir, join(dir, "validation"), undefined, executor, 2);
+      expect(executor.calls.some((call) => call.step === "validation_install")).toBe(false);
+    });
+  });
+
+  it("marks allPassed when lint, typecheck, and test pass and build is skipped", async () => {
+    await withTempDir(async (dir) => {
+      const config = withoutInstall();
+      config.commands.build = "";
+      const executor = makeExecutor(() => execResult());
+
+      const result = await runValidation(config, dir, join(dir, "validation"), undefined, executor);
+
+      expect(result.allPassed).toBe(true);
+    });
+  });
+
+  it("rejects unsafe validation commands without invoking a shell", async () => {
+    await withTempDir(async (dir) => {
+      const config = withoutInstall();
       config.commands.lint = "pnpm run lint && rm -rf .";
       config.commands.typecheck = "";
       config.commands.test = "";
@@ -82,7 +117,7 @@ describe("validation runner", () => {
 
   it("uses the configured package manager for default bare scripts", async () => {
     await withTempDir(async (dir) => {
-      const config = createDefaultConfig("demo");
+      const config = withoutInstall();
       config.project.package_manager = "npm";
       const executor = makeExecutor(() => execResult());
 
@@ -99,7 +134,7 @@ describe("validation runner", () => {
 
   it("explains package-manager mismatches without executing them", async () => {
     await withTempDir(async (dir) => {
-      const config = createDefaultConfig("demo");
+      const config = withoutInstall();
       config.project.package_manager = "npm";
       config.commands.lint = "pnpm run lint";
       config.commands.typecheck = "";
@@ -119,7 +154,7 @@ describe("validation runner", () => {
 
   it("records timeout and stderr details for failed validation steps", async () => {
     await withTempDir(async (dir) => {
-      const config = createDefaultConfig("demo");
+      const config = withoutInstall();
       config.commands.typecheck = "";
       config.commands.test = "";
       config.commands.build = "";
@@ -140,7 +175,7 @@ describe("validation runner", () => {
 
   it("does not pass a timed-out validation step with a zero exit code", async () => {
     await withTempDir(async (dir) => {
-      const config = createDefaultConfig("demo");
+      const config = withoutInstall();
       config.commands.typecheck = "";
       config.commands.test = "";
       config.commands.build = "";
@@ -155,7 +190,7 @@ describe("validation runner", () => {
 
   it("records signal and cancellation details for terminated validation", async () => {
     await withTempDir(async (dir) => {
-      const config = createDefaultConfig("demo");
+      const config = withoutInstall();
       config.commands.typecheck = "";
       config.commands.test = "";
       config.commands.build = "";

@@ -5,6 +5,9 @@ export interface ClaudeReviewPromptInput {
   diffPath: string;
   statusPath: string;
   reviewJsonPath: string;
+  projectSummaryPath?: string;
+  configFilePaths?: string[];
+  previousFinalResultPath?: string;
 }
 
 export function buildClaudeReviewPrompt(input: ClaudeReviewPromptInput): string {
@@ -16,6 +19,9 @@ export function buildClaudeReviewPrompt(input: ClaudeReviewPromptInput): string 
     "Inputs:",
     `- Git diff: ${input.diffPath}`,
     `- Git status: ${input.statusPath}`,
+    input.projectSummaryPath ? `- Project summary: ${input.projectSummaryPath}` : "",
+    ...(input.configFilePaths ?? []).map((path) => `- Config file: ${path}`),
+    input.previousFinalResultPath ? `- Previous loop final result: ${input.previousFinalResultPath}` : "",
     `- Project: ${input.config.project.name}`,
     "",
     "Review focus:",
@@ -28,9 +34,11 @@ export function buildClaudeReviewPrompt(input: ClaudeReviewPromptInput): string 
     "- tasks: array of objects with id, severity, category, title, description, files, suggested_fix, acceptance_criteria",
     "",
     "Allowed severities: blocker, critical, major, minor, nit.",
-    "Allowed categories: bug, security, type, test, refactor, design, docs.",
+    "Allowed categories: bug, security, type, refactor, design, docs.",
     "Use a deterministic task id based on the finding identity and source location. Keep the same id when the same finding is reworded in a later loop.",
     "",
     "Also return a Markdown review summary in the CLI output."
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

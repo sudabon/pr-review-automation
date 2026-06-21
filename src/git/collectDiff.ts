@@ -1,23 +1,31 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
+import { loadIgnorePatterns } from "../safety/loadIgnorePatterns.js";
+import { checkSafetyLimits, type SafetyCheckResult } from "../safety/checkSafetyLimits.js";
 
 export interface CollectDiffInput {
   cwd: string;
+  repoRoot: string;
   baseBranch: string;
   targetBranch?: string;
   inputDir: string;
   commandLogPath?: string;
+  config?: Parameters<typeof checkSafetyLimits>[1];
 }
 
 export interface DiffResult {
   diffPath: string;
   statusPath: string;
   diff: string;
+  rawDiff: string;
   status: string;
   isEmpty: boolean;
   isSameCommit?: boolean;
   lineCount: number;
+  changedFiles: string[];
+  filteredRemovedFiles: string[];
+  safety?: SafetyCheckResult;
 }
 
 export async function collectDiff(
@@ -32,7 +40,8 @@ export async function collectDiff(
     command: "git",
     args: ["status", "--short", "--branch"],
     cwd: input.cwd,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "git_status"
   });
   if (statusResult.exitCode !== 0) {
     throw new Error(`Failed to collect git status: ${formatFailure(statusResult)}`);
@@ -47,19 +56,25 @@ export async function collectDiff(
       ? ["diff", "--binary", range]
       : ["diff", "--binary", "--merge-base", input.baseBranch],
     cwd: input.cwd,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "git_diff"
   });
   if (diffResult.exitCode !== 0) {
     throw new Error(`Failed to collect git diff: ${formatFailure(diffResult)}`);
   }
 
-  const diff = diffResult.stdout.trim();
+  const rawDiff = diffResult.stdout.trim();
   let isSameCommit = false;
-  if (diff.length === 0) {
+  if (rawDiff.length === 0) {
     const baseCommit = await resolveCommit(input.baseBranch, input, executor);
     const targetCommit = await resolveCommit(input.targetBranch ?? "HEAD", input, executor);
     isSameCommit = baseCommit === targetCommit;
   }
+
+  const ignorePatterns = await loadIgnorePatterns(input.repoRoot ?? input.cwd);
+  const safety = input.config ? checkSafetyLimits(rawDiff, input.config, ignorePatterns) : undefined;
+  const diff = safety?.filtered.diff ?? rawDiff;
+  const lineCount = safety?.filtered.lineCount ?? countChangedLines(rawDiff);
 
   await writeFile(diffPath, diff, "utf8");
   await writeFile(statusPath, statusResult.stdout, "utf8");
@@ -68,10 +83,14 @@ export async function collectDiff(
     diffPath,
     statusPath,
     diff,
+    rawDiff,
     status: statusResult.stdout,
     isEmpty: diff.trim().length === 0,
     isSameCommit,
-    lineCount: countChangedLines(diff)
+    lineCount,
+    changedFiles: safety?.filtered.changedFiles ?? [],
+    filteredRemovedFiles: safety?.filtered.removedFiles ?? [],
+    safety
   };
 }
 
@@ -84,7 +103,8 @@ async function resolveCommit(
     command: "git",
     args: ["rev-parse", "--verify", `${ref}^{commit}`],
     cwd: input.cwd,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "git_rev_parse"
   });
   if (result.exitCode !== 0 || !result.stdout.trim()) {
     throw new Error(`Failed to resolve git ref ${ref}: ${formatFailure(result)}`);

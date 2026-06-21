@@ -1,12 +1,15 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
+import type { FinalResult } from "../runners/reviewSchemas.js";
 
 export interface CreatePullRequestInput {
   cwd: string;
   command: string;
   metaDir: string;
   commandLogPath?: string;
+  finalReviewMarkdownPath?: string;
+  finalResult?: FinalResult;
 }
 
 export type PullRequestResult =
@@ -43,7 +46,8 @@ export async function createPullRequest(
     command: "gh",
     args: ["auth", "status"],
     cwd: input.cwd,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "pr_auth"
   });
   if (auth.spawnFailed) {
     result = { status: "skipped", reason: auth.stderr || auth.all || "gh is not available." };
@@ -59,11 +63,15 @@ export async function createPullRequest(
     return result;
   }
 
+  const bodyAppendix = await buildPullRequestBodyAppendix(input);
+  const args = appendBodyToPullRequestArgs(parsed.args, bodyAppendix);
+
   const created = await executor({
     command: parsed.command,
-    args: parsed.args,
+    args,
     cwd: input.cwd,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "pr_create"
   });
   if (created.spawnFailed) {
     result = { status: "skipped", reason: created.stderr || created.all || "gh is not available." };
@@ -78,6 +86,56 @@ export async function createPullRequest(
 
   await writeFile(resultPath, JSON.stringify(result, null, 2), "utf8");
   return result;
+}
+
+async function buildPullRequestBodyAppendix(input: CreatePullRequestInput): Promise<string | undefined> {
+  const sections: string[] = [];
+
+  if (input.finalReviewMarkdownPath) {
+    try {
+      const markdown = await readFile(input.finalReviewMarkdownPath, "utf8");
+      const summary = markdown.trim();
+      if (summary) {
+        sections.push("## AI Review Summary", "", summary);
+      }
+    } catch {
+      // optional input
+    }
+  }
+
+  if (input.finalResult && input.finalResult.remaining_issues.length > 0) {
+    sections.push(
+      "## Remaining Issues",
+      "",
+      ...input.finalResult.remaining_issues.map((issue) => {
+        const label = "title" in issue && issue.title ? issue.title : issue.description ?? "issue";
+        return `- [${issue.severity}] ${label}`;
+      })
+    );
+  }
+
+  if (sections.length === 0) {
+    return undefined;
+  }
+
+  return sections.join("\n");
+}
+
+export function appendBodyToPullRequestArgs(args: string[], bodyAppendix?: string): string[] {
+  if (!bodyAppendix) {
+    return args;
+  }
+
+  const nextArgs = [...args];
+  const bodyIndex = nextArgs.indexOf("--body");
+  if (bodyIndex >= 0) {
+    const existingBody = nextArgs[bodyIndex + 1] ?? "";
+    nextArgs[bodyIndex + 1] = `${existingBody}\n\n${bodyAppendix}`.trim();
+    return nextArgs;
+  }
+
+  nextArgs.push("--body", bodyAppendix);
+  return nextArgs;
 }
 
 export function parsePullRequestCommand(input: string): { command: string; args: string[] } | null {

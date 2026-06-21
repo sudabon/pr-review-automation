@@ -7,6 +7,7 @@ export interface ClaudeFinalPromptInput {
   diffPath: string;
   finalResultPath: string;
   fixLogPaths: string[];
+  safetyWarningsPath?: string;
 }
 
 export function buildClaudeFinalPrompt(input: ClaudeFinalPromptInput): string {
@@ -17,6 +18,7 @@ export function buildClaudeFinalPrompt(input: ClaudeFinalPromptInput): string {
     `- Initial review: ${input.initialReviewPath}`,
     `- Current diff: ${input.diffPath}`,
     `- Validation result: ${input.validationResultPath}`,
+    input.safetyWarningsPath ? `- Safety warnings: ${input.safetyWarningsPath}` : "",
     ...input.fixLogPaths.map((path) => `- Fixer output: ${path}`),
     "",
     "Decide whether the current state is approved, needs more changes, or requires human review.",
@@ -29,5 +31,7 @@ export function buildClaudeFinalPrompt(input: ClaudeFinalPromptInput): string {
     "Reuse the original review task id when an issue remains. Keep that id unchanged across review loops even if wording changes.",
     "",
     `Project: ${input.config.project.name}`
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

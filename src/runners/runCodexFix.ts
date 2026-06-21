@@ -56,7 +56,8 @@ export async function runCodexFix(
     cwd: input.cwd,
     timeoutMs: input.config.codex.timeout_sec * 1000,
     outputPath,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "codex_fix"
   });
   const statusAfter = await readWorkingTreeSnapshot(input.cwd, input.commandLogPath, executor);
   const changed = statusBefore !== statusAfter;

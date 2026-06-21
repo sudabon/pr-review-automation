@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ensureGitRepository, ensureRequiredCliCommands, PreflightError } from "../src/git/checks.js";
 import { collectDiff } from "../src/git/collectDiff.js";
 import { commitChanges } from "../src/git/commitChanges.js";
-import { createPullRequest, parsePullRequestCommand } from "../src/git/createPullRequest.js";
+import { createPullRequest, appendBodyToPullRequestArgs, parsePullRequestCommand } from "../src/git/createPullRequest.js";
 import { createRunDirectory } from "../src/logs/createRunDirectory.js";
 import { writeCommandLog } from "../src/logs/writeCommandLog.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
@@ -273,6 +273,16 @@ describe("git and logs", () => {
     });
     expect(parsePullRequestCommand('gh pr create; rm -rf /')).toBeNull();
     expect(parsePullRequestCommand("gh issue create")).toBeNull();
+  });
+
+  it("keeps --fill when appending an explicit body", () => {
+    expect(appendBodyToPullRequestArgs(["pr", "create", "--fill"], "summary")).toEqual([
+      "pr",
+      "create",
+      "--fill",
+      "--body",
+      "summary"
+    ]);
   });
 
   it("creates a pull request with configured args and records the URL", async () => {

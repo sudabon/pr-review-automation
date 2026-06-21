@@ -1,6 +1,6 @@
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { resolveMainReviewerCommand, type Config } from "../config/schema.js";
+import { resolveClaudeReviewTimeoutSec, resolveMainReviewerCommand, type Config } from "../config/schema.js";
 import { writeCommandLog } from "../logs/writeCommandLog.js";
 import { buildClaudeReviewPrompt } from "../prompts/buildClaudeReviewPrompt.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
@@ -14,6 +14,9 @@ export interface RunClaudeReviewInput {
   statusPath: string;
   reviewDir: string;
   commandLogPath?: string;
+  projectSummaryPath?: string;
+  configFilePaths?: string[];
+  previousFinalResultPath?: string;
 }
 
 export interface ClaudeReviewResult {
@@ -36,7 +39,10 @@ export async function runClaudeReview(
     config: input.config,
     diffPath: input.diffPath,
     statusPath: input.statusPath,
-    reviewJsonPath
+    reviewJsonPath,
+    projectSummaryPath: input.projectSummaryPath,
+    configFilePaths: input.configFilePaths,
+    previousFinalResultPath: input.previousFinalResultPath
   });
   await writeFile(promptPath, prompt, "utf8");
   await rm(reviewJsonPath, { force: true });
@@ -46,9 +52,10 @@ export async function runClaudeReview(
     args: input.config.claude.args,
     input: prompt,
     cwd: input.cwd,
-    timeoutMs: input.config.claude.timeout_sec * 1000,
+    timeoutMs: resolveClaudeReviewTimeoutSec(input.config) * 1000,
     outputPath: markdownPath,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "claude_review"
   });
 
   if (result.exitCode !== 0 || result.timedOut) {
@@ -95,7 +102,8 @@ async function readOrExtractReviewJson(
         reason: `Expected JSON file was not written: ${path}; selected ${extracted.source} candidate ${extracted.candidateIndex}.`,
         started_at: at,
         ended_at: at,
-        exit_code: 0
+        exit_code: 0,
+        step: "claude_review"
       });
     }
   }

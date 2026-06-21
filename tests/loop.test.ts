@@ -11,12 +11,14 @@ import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 
 const validationPassed: ValidationResult = {
   status: "passed",
-  stop_on_validation_failure: true,
+  allPassed: true,
+  stop_on_validation_failure: false,
   all_steps_skipped: false,
   steps: {
+    install: { status: "skipped", exit_code: null },
     lint: { status: "passed", exit_code: 0 },
-    typecheck: { status: "skipped", exit_code: null },
-    test: { status: "skipped", exit_code: null },
+    typecheck: { status: "passed", exit_code: 0 },
+    test: { status: "passed", exit_code: 0 },
     build: { status: "skipped", exit_code: null }
   }
 };
@@ -70,9 +72,11 @@ describe("loop control", () => {
         finalResult: final("approved", [], "approved"),
         validationResult: {
           status: "failed",
+          allPassed: false,
           stop_on_validation_failure: true,
           all_steps_skipped: true,
           steps: {
+            install: { status: "skipped", exit_code: null },
             lint: { status: "skipped", exit_code: null },
             typecheck: { status: "skipped", exit_code: null },
             test: { status: "skipped", exit_code: null },
@@ -85,6 +89,36 @@ describe("loop control", () => {
       action: "stop",
       status: "human_review_required",
       reason: expect.stringContaining("All validation commands are empty")
+    });
+  });
+
+  it("stops when a required validation command is unset", () => {
+    const config = createDefaultConfig("demo");
+    expect(
+      shouldContinue({
+        config,
+        loopNumber: 1,
+        maxLoops: 3,
+        finalResult: final("approved", [], "approved"),
+        validationResult: {
+          status: "failed",
+          allPassed: false,
+          stop_on_validation_failure: false,
+          all_steps_skipped: false,
+          steps: {
+            install: { status: "skipped", exit_code: null },
+            lint: { status: "passed", exit_code: 0 },
+            typecheck: { status: "passed", exit_code: 0 },
+            test: { status: "skipped", exit_code: null },
+            build: { status: "skipped", exit_code: null }
+          }
+        },
+        maxRepeatCount: 0
+      })
+    ).toMatchObject({
+      action: "stop",
+      status: "human_review_required",
+      reason: expect.stringContaining("Required validation commands are unset")
     });
   });
 
@@ -101,6 +135,7 @@ describe("loop control", () => {
       })
     ).toMatchObject({ action: "stop", success: true });
 
+    config.limits.stop_on_validation_failure = true;
     const validationFailureInput = {
       config,
       loopNumber: 1,
@@ -620,6 +655,10 @@ describe("loop control", () => {
           }
           return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
         }
+        if (options.command === "gh" && args === "auth status") return execResult();
+        if (options.command === "gh" && args.startsWith("pr create")) {
+          return execResult({ stdout: "https://github.com/example/repo/pull/1\n" });
+        }
         return execResult();
       });
 
@@ -643,7 +682,7 @@ describe("loop control", () => {
     });
   });
 
-  it("returns non-success and preserves the worktree when PR creation fails after commit", async () => {
+  it("keeps the run successful and preserves committed artifacts when PR creation fails after commit", async () => {
     await withTempDir(async (dir) => {
       const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const config = createDefaultConfig("demo");
@@ -703,17 +742,17 @@ describe("loop control", () => {
       });
 
       expect(result).toMatchObject({
-        status: "needs_human_review",
-        reason: expect.stringContaining("pull request creation failed")
+        status: "completed",
+        reason: expect.stringMatching(/pull request creation failed/i)
       });
       expect(executor.calls.some((call) => call.args?.[0] === "commit")).toBe(true);
       expect(executor.calls.some((call) => call.args?.slice(0, 3).join(" ") === "worktree remove --force")).toBe(false);
       const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
       expect(state).toMatchObject({
-        status: "human_review_required",
-        reason: expect.stringContaining("pull request creation failed")
+        status: "approved",
+        reason: expect.stringMatching(/pull request creation failed/i)
       });
-      expect(state.history.at(-1)?.reason).toContain("pull request creation failed");
+      expect(state.history.at(-1)?.reason).toMatch(/pull request creation failed/i);
       expect(await readFile(join(result.runDirectory, "meta", "pr-result.json"), "utf8")).toContain('"status": "failed"');
       warning.mockRestore();
     });
