@@ -40,9 +40,9 @@ describe("safety guards", () => {
     expect(filtered.removedFiles).toEqual(["node_modules/pkg/index.js"]);
   });
 
-  it("detects important file changes and limit breaches", () => {
+  it("detects important file changes and limit breaches using filtered file counts", () => {
     const config = createDefaultConfig("demo");
-    config.limits.max_changed_files = 1;
+    config.limits.max_changed_files = 0;
     const result = checkSafetyLimits(sampleDiff, config, ["node_modules/"]);
     expect(result.stopReason).toBe("max_changed_files");
     expect(matchesIgnorePattern(".env.production", ".env.*")).toBe(true);

@@ -59,4 +59,28 @@ describe("success criteria", () => {
       })
     ).toBe(true);
   });
+
+  it("does not treat nit-only remaining issues as success when human review is required", () => {
+    expect(
+      isSuccess({
+        finalResult: {
+          decision: "human_review_required",
+          remaining_issues: [{ severity: "nit", title: "Nit 1" }],
+          reason: "needs human eyes"
+        },
+        validationResult: validationPassed
+      })
+    ).toBe(false);
+
+    expect(
+      isNitOnlySuccess({
+        finalResult: {
+          decision: "human_review_required",
+          remaining_issues: [{ severity: "nit", title: "Nit 1" }],
+          reason: "needs human eyes"
+        },
+        validationResult: validationPassed
+      })
+    ).toBe(false);
+  });
 });

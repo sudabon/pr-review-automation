@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const severitySchema = z.enum(["blocker", "critical", "major", "minor", "nit"]);
-export const categorySchema = z.enum(["bug", "security", "type", "test", "refactor", "design", "docs"]);
+export const categorySchema = z.enum(["bug", "security", "type", "refactor", "design", "docs"]);
 export const riskSchema = z.enum(["low", "medium", "high"]);
 
 export const reviewTaskSchema = z.strictObject({

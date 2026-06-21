@@ -126,7 +126,7 @@ export function appendBodyToPullRequestArgs(args: string[], bodyAppendix?: strin
     return args;
   }
 
-  const nextArgs = [...args];
+  const nextArgs = args.filter((token) => token !== "--fill");
   const bodyIndex = nextArgs.indexOf("--body");
   if (bodyIndex >= 0) {
     const existingBody = nextArgs[bodyIndex + 1] ?? "";

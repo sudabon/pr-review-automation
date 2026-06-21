@@ -244,6 +244,42 @@ describe("fix runners", () => {
     });
   });
 
+  it("preserves codex changes when cursor times out in sequential mode", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixer_mode = "sequential";
+      let status = "";
+      const executor = makeExecutor((options) => {
+        if (options.command === "git") {
+          return execResult({ stdout: status });
+        }
+        if (options.command === "codex") {
+          status = " M src/a.ts\n";
+          return execResult({ stdout: "codex fixed", all: "codex fixed" });
+        }
+        return execResult({ exitCode: 124, timedOut: true, stderr: "timed out", all: "timed out" });
+      });
+
+      const result = await runFix(
+        {
+          config,
+          cwd: dir,
+          fixDir: join(dir, "fix"),
+          review,
+          reviewJsonPath: "review.json",
+          dryRun: false
+        },
+        executor
+      );
+
+      expect(result.status).toBe("completed");
+      expect(result.activeFixer).toBe("codex");
+      expect(result.attempts).toHaveLength(2);
+      expect(result.attempts[0]).toMatchObject({ fixer: "codex", status: "completed" });
+      expect(result.attempts[1]).toMatchObject({ fixer: "cursor", status: "failed" });
+    });
+  });
+
   it("classifies token limits even when a fixer times out", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");

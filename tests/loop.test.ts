@@ -72,9 +72,11 @@ describe("loop control", () => {
         finalResult: final("approved", [], "approved"),
         validationResult: {
           status: "failed",
+          allPassed: false,
           stop_on_validation_failure: true,
           all_steps_skipped: true,
           steps: {
+            install: { status: "skipped", exit_code: null },
             lint: { status: "skipped", exit_code: null },
             typecheck: { status: "skipped", exit_code: null },
             test: { status: "skipped", exit_code: null },
@@ -87,6 +89,36 @@ describe("loop control", () => {
       action: "stop",
       status: "human_review_required",
       reason: expect.stringContaining("All validation commands are empty")
+    });
+  });
+
+  it("stops when a required validation command is unset", () => {
+    const config = createDefaultConfig("demo");
+    expect(
+      shouldContinue({
+        config,
+        loopNumber: 1,
+        maxLoops: 3,
+        finalResult: final("approved", [], "approved"),
+        validationResult: {
+          status: "failed",
+          allPassed: false,
+          stop_on_validation_failure: false,
+          all_steps_skipped: false,
+          steps: {
+            install: { status: "skipped", exit_code: null },
+            lint: { status: "passed", exit_code: 0 },
+            typecheck: { status: "passed", exit_code: 0 },
+            test: { status: "skipped", exit_code: null },
+            build: { status: "skipped", exit_code: null }
+          }
+        },
+        maxRepeatCount: 0
+      })
+    ).toMatchObject({
+      action: "stop",
+      status: "human_review_required",
+      reason: expect.stringContaining("Required validation commands are unset")
     });
   });
 

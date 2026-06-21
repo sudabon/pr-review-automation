@@ -32,6 +32,13 @@ export function validationAllPassed(result: ValidationResult): boolean {
   return result.allPassed;
 }
 
+export function hasUnsetRequiredValidationSteps(
+  steps: Record<ValidationStepName, ValidationStepResult>
+): boolean {
+  const required: ValidationStepName[] = ["lint", "typecheck", "test"];
+  return required.some((name) => steps[name].status === "skipped");
+}
+
 const VALIDATION_ORDER: ValidationStepName[] = ["install", "lint", "typecheck", "test", "build"];
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9_@./:+,=\-]+$/;
 

@@ -1,8 +1,8 @@
 import type { Config } from "../config/schema.js";
 import { hasImportantIssues, type FinalResult } from "../runners/reviewSchemas.js";
 import type { ValidationResult } from "../runners/runValidation.js";
-import { validationAllPassed } from "../runners/runValidation.js";
-import { hasOnlyNitIssues, isNitOnlySuccess, isSuccess } from "./isSuccess.js";
+import { hasUnsetRequiredValidationSteps, validationAllPassed } from "../runners/runValidation.js";
+import { isNitOnlySuccess, isSuccess } from "./isSuccess.js";
 
 export type LoopDecisionAction = "continue" | "stop";
 
@@ -50,6 +50,16 @@ export function shouldContinue(input: LoopDecisionInput): LoopDecision {
     };
   }
 
+  if (hasUnsetRequiredValidationSteps(input.validationResult.steps)) {
+    return {
+      action: "stop",
+      status: "human_review_required",
+      reason:
+        "Required validation commands are unset, so success criteria cannot be met. Configure commands.lint, commands.typecheck, and commands.test.",
+      success: false
+    };
+  }
+
   const signaledSteps = Object.entries(input.validationResult.steps)
     .filter(([, step]) => step.signal || step.is_canceled)
     .map(([name, step]) => `${name}${step.signal ? ` (${step.signal})` : " (canceled)"}`);
@@ -86,7 +96,7 @@ export function shouldContinue(input: LoopDecisionInput): LoopDecision {
     };
   }
 
-  if (isSuccess(input) || isNitOnlySuccess(input)) {
+  if (isSuccess(input)) {
     const reason = isNitOnlySuccess(input)
       ? "Only nit-level remaining issues were found and validation passed."
       : input.finalResult.reason;
@@ -139,15 +149,6 @@ export function shouldContinue(input: LoopDecisionInput): LoopDecision {
 
   if (input.loopNumber >= input.maxLoops) {
     return { action: "stop", status: "max_loops", reason: "Maximum loop count reached.", success: false };
-  }
-
-  if (hasOnlyNitIssues(input.finalResult) && validationAllPassed(input.validationResult)) {
-    return {
-      action: "stop",
-      status: "approved",
-      reason: "Only nit-level remaining issues were found and validation passed.",
-      success: true
-    };
   }
 
   if (

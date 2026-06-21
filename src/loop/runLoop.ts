@@ -245,13 +245,6 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
 
       const previousFinalResultPath =
         loopNumber > 1 ? join(runDirectory.finalDir, "final-result.json") : undefined;
-      if (previousFinalResultPath) {
-        try {
-          await access(previousFinalResultPath);
-        } catch {
-          // no previous final result yet
-        }
-      }
 
       const review = await runClaudeReview(
         {

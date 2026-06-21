@@ -146,11 +146,21 @@ async function runSequentialFixers(
       continue;
     }
 
-    if (attempt.execResult.timedOut) {
-      throw new Error(`${fixer} fixer timed out`);
-    }
+    if (attempt.execResult.timedOut || attempt.status === "failed") {
+      if (lastCompletedFixer) {
+        return {
+          status: "completed",
+          activeFixer: lastCompletedFixer,
+          outputPaths: attempts.map((item) => item.outputPath),
+          attempts,
+          failovers
+        };
+      }
 
-    if (attempt.status === "failed") {
+      if (attempt.execResult.timedOut) {
+        throw new Error(`${fixer} fixer timed out`);
+      }
+
       throw new Error(
         `${fixer} fixer failed: ${attempt.failureReason || attempt.execResult.stderr || attempt.execResult.all || "unknown error"}`
       );

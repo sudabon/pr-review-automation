@@ -27,7 +27,7 @@ export function checkSafetyLimits(
   ignorePatterns: string[]
 ): SafetyCheckResult {
   const filtered = filterDiff(diff, ignorePatterns);
-  const changedFiles = extractChangedFilePaths(diff);
+  const changedFiles = filtered.changedFiles;
   const warnings = collectLockfileWarnings(diff, config.limits.lockfile_change_warn_lines);
 
   if (changedFiles.length > config.limits.max_changed_files) {

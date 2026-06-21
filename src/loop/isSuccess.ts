@@ -16,6 +16,10 @@ export function hasOnlyNitIssues(finalResult: FinalResult): boolean {
 }
 
 export function isNitOnlySuccess(input: SuccessCheckInput): boolean {
+  if (input.finalResult.decision === "human_review_required") {
+    return false;
+  }
+
   return (
     validationAllPassed(input.validationResult) &&
     hasOnlyNitIssues(input.finalResult) &&
