@@ -145,6 +145,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
     await saveLoopState(runDirectory.loopStatePath, nextState);
     state = nextState;
   };
+  let preserveCommittedArtifacts = false;
 
   try {
     for (let loopNumber = startLoop; loopNumber <= maxLoops; loopNumber += 1) {
@@ -469,6 +470,16 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
                   decision
                 };
               }
+            } else {
+              preserveCommittedArtifacts = true;
+              const artifactHint = formatCommittedArtifactHint(nextState);
+              resultReason = artifactHint ? `${decision.reason} ${artifactHint}` : decision.reason;
+              const history = [...nextState.history];
+              const lastHistory = history.at(-1);
+              if (lastHistory) {
+                history[history.length - 1] = { ...lastHistory, reason: resultReason };
+              }
+              await persistState({ ...nextState, reason: resultReason, history });
             }
           }
         }
@@ -516,6 +527,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
       state,
       runDirectory.commandLogPath,
       isResumableStatus(state.status),
+      preserveCommittedArtifacts,
       executor
     );
   }
@@ -622,11 +634,17 @@ async function cleanupLoopWorktree(
   state: LoopState,
   commandLogPath: string,
   preserveForResume: boolean,
+  preserveCommittedArtifacts: boolean,
   executor: CommandExecutor
 ): Promise<void> {
+  const preserveWorktree = preserveForResume || preserveCommittedArtifacts;
   try {
     if (preserveForResume) {
       console.warn(`[ai-dev-loop] run can be resumed; preserving worktree at ${state.worktree_path}`);
+    } else if (preserveCommittedArtifacts) {
+      const branchHint =
+        state.worktree_mode !== "current" && state.worktree_branch ? ` on branch ${state.worktree_branch}` : "";
+      console.warn(`[ai-dev-loop] committed changes preserved${branchHint} at ${state.worktree_path}`);
     }
     await cleanupWorktree(
       {
@@ -636,7 +654,7 @@ async function cleanupLoopWorktree(
         branchName: state.worktree_mode === "current" ? undefined : state.worktree_branch,
         originalBranch: state.worktree_mode === "branch" ? state.worktree_original_branch : undefined,
         originalRef: state.worktree_mode === "branch" ? state.worktree_original_ref : undefined,
-        preserveForResume,
+        preserveForResume: preserveWorktree,
         commandLogPath
       },
       executor
@@ -663,6 +681,17 @@ async function cleanupLoopWorktree(
 
 function isResumableStatus(status: LoopStateStatus): boolean {
   return status === "human_review_required";
+}
+
+function formatCommittedArtifactHint(state: LoopState): string {
+  const parts: string[] = [];
+  if (state.worktree_mode !== "current" && state.worktree_branch) {
+    parts.push(`Committed changes are on branch ${state.worktree_branch}.`);
+  }
+  if (state.worktree_mode === "worktree") {
+    parts.push(`Worktree preserved at ${state.worktree_path}.`);
+  }
+  return parts.join(" ");
 }
 
 async function prepareResumeWorktree(

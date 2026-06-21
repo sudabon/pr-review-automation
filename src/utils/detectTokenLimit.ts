@@ -57,8 +57,9 @@ export function detectTokenLimitPattern(input: DetectTokenLimitInput): string | 
   if (/(^|[^a-z0-9_])rate_limit_exceeded([^a-z0-9_]|$)/i.test(stdout)) {
     return "rate_limit_exceeded";
   }
-  if (/(^|[\s[(])429(?=$|[\s)\],.;:])/i.test(stdout)) {
-    return "429";
+  const stdoutContextPattern = ["http 429", "status code 429"].find((pattern) => stdout.includes(pattern));
+  if (stdoutContextPattern) {
+    return stdoutContextPattern;
   }
   return undefined;
 }

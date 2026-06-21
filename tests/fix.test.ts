@@ -459,6 +459,18 @@ describe("fix runners", () => {
     ).toBe(false);
   });
 
+  it("does not treat an unrelated line number as a token limit", () => {
+    expect(
+      detectTokenLimit({
+        result: execResult({
+          exitCode: 1,
+          stdout: "Error on line 429.",
+          stderr: ""
+        })
+      })
+    ).toBe(false);
+  });
+
   it("ignores token-limit text outside the inspected output tail", () => {
     expect(
       detectTokenLimit({

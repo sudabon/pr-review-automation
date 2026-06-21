@@ -510,6 +510,72 @@ describe("loop control", () => {
     });
   });
 
+  it("preserves committed artifacts when create_pr_on_success is false", async () => {
+    await withTempDir(async (dir) => {
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const config = createDefaultConfig("demo");
+      let status = "";
+      const executor = makeExecutor(async (options) => {
+        const args = options.args?.join(" ") ?? "";
+        if (options.command === "git" && args === "rev-parse --is-inside-work-tree") return execResult({ stdout: "true" });
+        if (options.command === "git" && args === "rev-parse --show-toplevel") return execResult({ stdout: dir });
+        if (options.command === "git" && args === "rev-parse HEAD") return execResult({ stdout: "commit-sha\n" });
+        if (options.args?.[0] === "--version") return execResult({ stdout: "1.0.0" });
+        if (options.command === "git" && options.args?.[0] === "worktree") return execResult();
+        if (options.command === "git" && args === "status --porcelain") return execResult({ stdout: status });
+        if (options.command === "git" && options.args?.[0] === "status") return execResult({ stdout: "## feature\n" });
+        if (options.command === "git" && options.args?.[0] === "diff") {
+          return execResult({ stdout: "diff --git a/file.ts b/file.ts\n@@ -1 +1 @@\n-old\n+new\n" });
+        }
+        if (options.command === "codex") {
+          status = " M file.ts\n";
+          return execResult({ stdout: "fixed" });
+        }
+        if (options.command === "claude") {
+          const isFinalReview = options.input?.includes("Perform the final review") ?? false;
+          const output = isFinalReview
+            ? { decision: "approved", remaining_issues: [], reason: "clean" }
+            : {
+                summary: "review",
+                overall_risk: "medium",
+                tasks: [{
+                  id: "R1",
+                  severity: "major",
+                  category: "bug",
+                  title: "Bug",
+                  description: "Bug",
+                  files: ["file.ts"],
+                  suggested_fix: "Fix",
+                  acceptance_criteria: ["fixed"]
+                }]
+              };
+          if (isFinalReview) {
+            await writeRequestedFinalResult(options.input ?? "", output);
+          }
+          return execResult({ stdout: JSON.stringify(output), all: JSON.stringify(output) });
+        }
+        return execResult();
+      });
+
+      const result = await runLoop({
+        cwd: dir,
+        config,
+        options: { baseBranch: "main", maxLoops: 1, commitOnSuccess: true, dryRun: false, onlyReview: false },
+        executor
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.reason).toContain("Committed changes are on branch");
+      expect(executor.calls.some((call) => call.args?.slice(0, 3).join(" ") === "worktree remove --force")).toBe(false);
+      expect(executor.calls.some((call) => call.args?.slice(0, 2).join(" ") === "branch -D")).toBe(false);
+      expect(executor.calls.some((call) => call.args?.[0] === "commit")).toBe(true);
+      expect(executor.calls.some((call) => call.command === "gh" && call.args?.slice(0, 2).join(" ") === "pr create")).toBe(
+        false
+      );
+      warning.mockRestore();
+    });
+  });
+
   it("cleans an approved worktree and its temporary branch", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
