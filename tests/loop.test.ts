@@ -54,7 +54,7 @@ describe("loop control", () => {
       onlyReview: false
     };
 
-    expect(getRequiredCliCommands(config, options)).toEqual(["claude", "codex", "agent"]);
+    expect(getRequiredCliCommands(config, options)).toEqual(["claude", "agent", "codex"]);
     expect(getRequiredCliCommands(config, { ...options, dryRun: true })).toEqual(["claude"]);
     expect(getRequiredCliCommands(config, { ...options, onlyReview: true })).toEqual(["claude"]);
 

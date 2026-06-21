@@ -44,15 +44,15 @@ TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after arch
 - **THEN** 作業用 worktree または一時ブランチが作成され、本番ブランチ上で直接修正されない
 
 ### Requirement: ランナー実行順序の制御
-1 ループ内で、システムは「git 差分収集 → 安全策チェック → Claude レビュー → Codex 修正 → Cursor 修正 → 検証 → Claude 最終レビュー」の順にランナーを実行しなければならない（SHALL）。`agents.fixer_mode` が `sequential`（既定）の場合、設定 `agents.fixers` に列挙された全エージェントを順に実行しなければならない（SHALL）。`failover` の場合は先頭エージェントのみを実行し、トークン超過時に次へ交代する（MVP 互換）。`--only-review` 指定時は Claude レビューまでで停止しなければならない（SHALL）。`--dry-run` 指定時は修正 CLI を実行してはならないが、修正プロンプトファイルの生成は行わなければならない（SHALL）。
+1 ループ内で、システムは「git 差分収集 → 安全策チェック → Claude レビュー → Cursor 修正 → Codex 修正 → 検証 → Claude 最終レビュー」の順にランナーを実行しなければならない（SHALL）。`agents.fixer_mode` が `sequential`（既定）の場合、設定 `agents.fixers` に列挙された全エージェントを順に実行しなければならない（SHALL）。`failover` の場合は先頭エージェントのみを実行し、トークン超過時に次へ交代する（MVP 互換）。`--only-review` 指定時は Claude レビューまでで停止しなければならない（SHALL）。`--dry-run` 指定時は修正 CLI を実行してはならないが、修正プロンプトファイルの生成は行わなければならない（SHALL）。
 
 #### Scenario: 通常実行の順序（sequential）
 - **WHEN** `fixer_mode` が sequential（既定）で 1 ループが実行される
-- **THEN** 差分収集・安全策チェック・Claude レビュー・Codex 修正・Cursor 修正・検証・Claude 最終レビューがこの順序で実行される
+- **THEN** 差分収集・安全策チェック・Claude レビュー・Cursor 修正・Codex 修正・検証・Claude 最終レビューがこの順序で実行される
 
 #### Scenario: failover モード
-- **WHEN** `fixer_mode` が failover で Codex が正常完了する
-- **THEN** Cursor 修正はスキップされ、検証フェーズに進む
+- **WHEN** `fixer_mode` が failover で Cursor が正常完了する
+- **THEN** Codex 修正はスキップされ、検証フェーズに進む
 
 #### Scenario: only-review モード
 - **WHEN** `--only-review` を指定して実行する

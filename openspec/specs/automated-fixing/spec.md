@@ -11,26 +11,26 @@ TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after arch
 - **THEN** `fix-pr-comments` スキルがレビューコメントを入力として起動され、重要度の高い指摘から修正が適用される
 
 ### Requirement: 修正担当エージェントの優先順位
-修正担当エージェントは設定 `agents.fixers` の並び順で優先順位を持ち、既定は 1 番手 Codex・2 番手 Cursor Agent でなければならない（SHALL）。`agents.fixer_mode` が `sequential`（既定）の場合、各ループで fixers 配列の全エージェントを順に実行しなければならない（SHALL）。`failover` の場合は先頭エージェントのみを active fixer として実行し、トークン超過時に次へ交代する（SHALL）。
+修正担当エージェントは設定 `agents.fixers` の並び順で優先順位を持ち、既定は 1 番手 Cursor Agent・2 番手 Codex でなければならない（SHALL）。`agents.fixer_mode` が `sequential`（既定）の場合、各ループで fixers 配列の全エージェントを順に実行しなければならない（SHALL）。`failover` の場合は先頭エージェントのみを active fixer として実行し、トークン超過時に次へ交代する（SHALL）。
 
 #### Scenario: sequential モードでの全担当実行
 - **WHEN** `fixer_mode` が sequential で修正フェーズが開始される
-- **THEN** Codex 修正の後に Cursor 修正が実行される
+- **THEN** Cursor 修正の後に Codex 修正が実行される
 
 #### Scenario: failover モードでの先頭のみ実行
-- **WHEN** `fixer_mode` が failover で Codex が正常完了する
-- **THEN** Cursor は実行されない
+- **WHEN** `fixer_mode` が failover で Cursor が正常完了する
+- **THEN** Codex は実行されない
 
 #### Scenario: 既定の担当順
 - **WHEN** 修正フェーズが開始され `agents.fixers` が未指定（既定）である
-- **THEN** Codex が 1 番手、Cursor Agent が 2 番手として順に実行される（sequential 時）
+- **THEN** Cursor Agent が 1 番手、Codex が 2 番手として順に実行される（sequential 時）
 
 ### Requirement: トークン超過時の自動担当者交代
 active fixer の CLI がサブスクリプションのトークン超過（クォータ超過・レート上限）を示した場合、システムは自動的に優先順位の次のエージェントへ担当を交代（フェイルオーバー）し、未対応のコメントから修正を継続しなければならない（SHALL）。担当交代の事実（交代元・交代先・時刻・理由）を run の記録（`meta/loop-state.json` または `meta/command-log.jsonl`）に残さなければならない（SHALL）。優先順位の全エージェントがトークン超過に達した場合、システムは修正を停止し、人間レビューへ差し戻さなければならない（SHALL）。
 
-#### Scenario: Codex のトークン超過で Cursor へ交代
-- **WHEN** active fixer の Codex がトークン超過を示す
-- **THEN** 担当が自動的に Cursor Agent へ交代し、未対応コメントの修正が継続され、交代が記録される
+#### Scenario: Cursor のトークン超過で Codex へ交代
+- **WHEN** active fixer の Cursor がトークン超過を示す
+- **THEN** 担当が自動的に Codex へ交代し、未対応コメントの修正が継続され、交代が記録される
 
 #### Scenario: 全担当がトークン超過
 - **WHEN** Codex と Cursor の両方がトークン超過に達する

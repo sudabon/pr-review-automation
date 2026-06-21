@@ -81,7 +81,7 @@ describe("configuration", () => {
 
   it("defines the expected default fixer failover order", () => {
     const config = createDefaultConfig("demo");
-    expect(config.agents.fixers).toEqual(["codex", "cursor"]);
+    expect(config.agents.fixers).toEqual(["cursor", "codex"]);
     expect(config.agents.token_limit_patterns.codex.length).toBeGreaterThan(0);
   });
 
