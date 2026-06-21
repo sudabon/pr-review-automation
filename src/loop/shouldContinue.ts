@@ -38,6 +38,16 @@ export type LoopDecision =
     };
 
 export function shouldContinue(input: LoopDecisionInput): LoopDecision {
+  if (input.validationResult.all_steps_skipped) {
+    return {
+      action: "stop",
+      status: "human_review_required",
+      reason:
+        "All validation commands are empty or unset; configure commands.lint, commands.typecheck, commands.test, or commands.build before continuing.",
+      success: false
+    };
+  }
+
   const signaledSteps = Object.entries(input.validationResult.steps)
     .filter(([, step]) => step.signal || step.is_canceled)
     .map(([name, step]) => `${name}${step.signal ? ` (${step.signal})` : " (canceled)"}`);

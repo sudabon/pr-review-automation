@@ -23,8 +23,9 @@ export function execResult(partial: Partial<ExecResult> = {}): ExecResult {
     all: partial.all ?? partial.stdout ?? "",
     timedOut: partial.timedOut ?? false,
     signal: partial.signal,
+    spawnFailed: partial.spawnFailed ?? false,
+    signal: partial.signal,
     isCanceled: partial.isCanceled ?? false,
-    startedAt: partial.startedAt ?? "2026-06-19T00:00:00.000Z",
     endedAt: partial.endedAt ?? "2026-06-19T00:00:01.000Z",
     durationMs: partial.durationMs ?? 1000
   };

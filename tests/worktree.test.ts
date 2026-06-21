@@ -7,6 +7,17 @@ import { cleanupWorktree, createWorktree } from "../src/git/createWorktree.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 
 describe("worktree lifecycle", () => {
+  it("rejects worktree directories that resolve outside the repository", async () => {
+    const config = createDefaultConfig("demo");
+    config.git.worktree_dir = "../escape";
+    const executor = makeExecutor(() => execResult());
+
+    await expect(createWorktree("/repo", config, "run-1", undefined, undefined, executor)).rejects.toThrow(
+      "git.worktree_dir must resolve inside the repository."
+    );
+    expect(executor.calls).toHaveLength(0);
+  });
+
   it("stops without changing the current checkout when worktree creation fails", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");

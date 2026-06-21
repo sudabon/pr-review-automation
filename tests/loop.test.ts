@@ -12,8 +12,9 @@ import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 const validationPassed: ValidationResult = {
   status: "passed",
   stop_on_validation_failure: true,
+  all_steps_skipped: false,
   steps: {
-    lint: { status: "skipped", exit_code: null },
+    lint: { status: "passed", exit_code: 0 },
     typecheck: { status: "skipped", exit_code: null },
     test: { status: "skipped", exit_code: null },
     build: { status: "skipped", exit_code: null }
@@ -57,6 +58,34 @@ describe("loop control", () => {
 
     config.agents.main_reviewer = "reviewer-wrapper";
     expect(getRequiredCliCommands(config, { ...options, onlyReview: true })).toEqual(["reviewer-wrapper"]);
+  });
+
+  it("stops when every validation command is skipped", () => {
+    const config = createDefaultConfig("demo");
+    expect(
+      shouldContinue({
+        config,
+        loopNumber: 1,
+        maxLoops: 3,
+        finalResult: final("approved", [], "approved"),
+        validationResult: {
+          status: "failed",
+          stop_on_validation_failure: true,
+          all_steps_skipped: true,
+          steps: {
+            lint: { status: "skipped", exit_code: null },
+            typecheck: { status: "skipped", exit_code: null },
+            test: { status: "skipped", exit_code: null },
+            build: { status: "skipped", exit_code: null }
+          }
+        },
+        maxRepeatCount: 0
+      })
+    ).toMatchObject({
+      action: "stop",
+      status: "human_review_required",
+      reason: expect.stringContaining("All validation commands are empty")
+    });
   });
 
   it("stops on approval and honors stop_on_validation_failure", () => {
@@ -484,10 +513,6 @@ describe("loop control", () => {
   it("cleans an approved worktree and its temporary branch", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
-      config.commands.lint = "";
-      config.commands.typecheck = "";
-      config.commands.test = "";
-      config.commands.build = "";
       config.git.create_pr_on_success = true;
       let status = "";
       const executor = makeExecutor(async (options) => {
@@ -557,10 +582,6 @@ describe("loop control", () => {
       const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const config = createDefaultConfig("demo");
       config.git.create_pr_on_success = true;
-      config.commands.lint = "";
-      config.commands.typecheck = "";
-      config.commands.test = "";
-      config.commands.build = "";
       let status = "";
       const executor = makeExecutor(async (options) => {
         const args = options.args?.join(" ") ?? "";
@@ -617,16 +638,16 @@ describe("loop control", () => {
 
       expect(result).toMatchObject({
         status: "needs_human_review",
-        reason: expect.stringContaining("network unavailable")
+        reason: expect.stringContaining("pull request creation failed")
       });
       expect(executor.calls.some((call) => call.args?.[0] === "commit")).toBe(true);
       expect(executor.calls.some((call) => call.args?.slice(0, 3).join(" ") === "worktree remove --force")).toBe(false);
       const state = JSON.parse(await readFile(join(result.runDirectory, "meta", "loop-state.json"), "utf8"));
       expect(state).toMatchObject({
         status: "human_review_required",
-        reason: expect.stringContaining("network unavailable")
+        reason: expect.stringContaining("pull request creation failed")
       });
-      expect(state.history.at(-1)?.reason).toContain("network unavailable");
+      expect(state.history.at(-1)?.reason).toContain("pull request creation failed");
       expect(await readFile(join(result.runDirectory, "meta", "pr-result.json"), "utf8")).toContain('"status": "failed"');
       warning.mockRestore();
     });
@@ -746,11 +767,6 @@ describe("loop control", () => {
       await mkdir(join(dir, ".git"), { recursive: true });
       const config = createDefaultConfig("demo");
       config.agents.fixers = ["codex"];
-      config.commands.lint = "";
-      config.commands.typecheck = "";
-      config.commands.test = "";
-      config.commands.build = "";
-
       const executor = makeExecutor((options) => {
         if (options.command === "git" && options.args?.join(" ") === "rev-parse --is-inside-work-tree") {
           return execResult({ stdout: "true" });
@@ -823,10 +839,6 @@ describe("loop control", () => {
       await mkdir(join(dir, ".git"), { recursive: true });
       const config = createDefaultConfig("demo");
       config.git.use_worktree = false;
-      config.commands.lint = "";
-      config.commands.typecheck = "";
-      config.commands.test = "";
-      config.commands.build = "";
       config.limits.max_same_issue_repeats = 3;
       let finalReviewCount = 0;
       let fixerCount = 0;
@@ -980,10 +992,6 @@ describe("loop control", () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
       config.git.use_worktree = false;
-      config.commands.lint = "";
-      config.commands.typecheck = "";
-      config.commands.test = "";
-      config.commands.build = "";
       config.limits.max_same_issue_repeats = 2;
       let fixerCount = 0;
       let finalCount = 0;
@@ -1069,10 +1077,6 @@ describe("loop control", () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
       config.git.use_worktree = false;
-      config.commands.lint = "";
-      config.commands.typecheck = "";
-      config.commands.test = "";
-      config.commands.build = "";
       config.limits.abnormal_diff_line_threshold = 3;
       let fixed = false;
       let status = "";
@@ -1175,10 +1179,6 @@ describe("loop control", () => {
         "utf8"
       );
       const config = createDefaultConfig("demo");
-      config.commands.lint = "";
-      config.commands.typecheck = "";
-      config.commands.test = "";
-      config.commands.build = "";
       let status = "";
       const executor = makeExecutor(async (options) => {
         const args = options.args?.join(" ") ?? "";
@@ -1390,10 +1390,6 @@ describe("loop control", () => {
         const config = createDefaultConfig("demo");
         config.git.use_worktree = false;
         config.git.commit_on_success = scenario.config;
-        config.commands.lint = "";
-        config.commands.typecheck = "";
-        config.commands.test = "";
-        config.commands.build = "";
         let status = "";
         const executor = makeExecutor(async (options) => {
           const args = options.args?.join(" ") ?? "";
@@ -1479,10 +1475,6 @@ describe("loop control", () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");
       config.git.use_worktree = false;
-      config.commands.lint = "";
-      config.commands.typecheck = "";
-      config.commands.test = "";
-      config.commands.build = "";
       const patch = ["diff --git a/file.ts b/file.ts", "@@ -1 +1 @@", "-old", "+new"].join("\n");
       const executor = makeExecutor((options) => {
         const args = options.args?.join(" ") ?? "";

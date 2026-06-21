@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ensureGitRepository, ensureRequiredCliCommands, PreflightError } from "../src/git/checks.js";
 import { collectDiff } from "../src/git/collectDiff.js";
 import { commitChanges } from "../src/git/commitChanges.js";
-import { createPullRequest } from "../src/git/createPullRequest.js";
+import { createPullRequest, parsePullRequestCommand } from "../src/git/createPullRequest.js";
 import { createRunDirectory } from "../src/logs/createRunDirectory.js";
 import { writeCommandLog } from "../src/logs/writeCommandLog.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
@@ -230,6 +230,51 @@ describe("git and logs", () => {
     expect(commitExecutor.calls.map((call) => call.args?.[0])).toEqual(["status", "add", "commit", "rev-parse"]);
   });
 
+  it("rejects unsafe pull request commands", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor(() => {
+        throw new Error("should not run");
+      });
+
+      const result = await createPullRequest(
+        {
+          cwd: dir,
+          command: 'gh pr create --title "AI fixes" --body "$(rm -rf /)"',
+          metaDir: join(dir, "meta")
+        },
+        executor
+      );
+
+      expect(result).toEqual({
+        status: "failed",
+        reason: expect.stringContaining('safe "gh pr create"')
+      });
+      expect(executor.calls).toHaveLength(0);
+    });
+  });
+
+  it("records auth_required when gh is installed but not authenticated", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor(() => execResult({ exitCode: 1, stderr: "not logged in" }));
+
+      const result = await createPullRequest(
+        { cwd: dir, command: "gh pr create --fill", metaDir: join(dir, "meta") },
+        executor
+      );
+
+      expect(result).toEqual({ status: "auth_required", reason: "not logged in" });
+    });
+  });
+
+  it("parses only safe gh pr create commands", () => {
+    expect(parsePullRequestCommand('gh pr create --title "AI fixes" --fill')).toEqual({
+      command: "gh",
+      args: ["pr", "create", "--title", "AI fixes", "--fill"]
+    });
+    expect(parsePullRequestCommand('gh pr create; rm -rf /')).toBeNull();
+    expect(parsePullRequestCommand("gh issue create")).toBeNull();
+  });
+
   it("creates a pull request with configured args and records the URL", async () => {
     await withTempDir(async (dir) => {
       const executor = makeExecutor((options) =>
@@ -255,9 +300,7 @@ describe("git and logs", () => {
 
   it("records a skipped pull request when gh is unavailable", async () => {
     await withTempDir(async (dir) => {
-      const executor = makeExecutor(() => {
-        throw new Error("spawn gh ENOENT");
-      });
+      const executor = makeExecutor(() => execResult({ spawnFailed: true, exitCode: 127, stderr: "spawn gh ENOENT" }));
 
       const result = await createPullRequest(
         { cwd: dir, command: "gh pr create --fill", metaDir: join(dir, "meta") },

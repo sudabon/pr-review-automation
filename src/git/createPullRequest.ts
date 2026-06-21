@@ -11,7 +11,15 @@ export interface CreatePullRequestInput {
 
 export type PullRequestResult =
   | { status: "created"; url?: string }
-  | { status: "skipped" | "failed"; reason: string };
+  | { status: "auth_required"; reason: string }
+  | { status: "skipped"; reason: string }
+  | { status: "failed"; reason: string };
+
+const UNSAFE_PR_TOKEN_PATTERN = /[;&|`$()<>\\]/;
+
+function isSafePullRequestToken(token: string): boolean {
+  return token.length > 0 && !UNSAFE_PR_TOKEN_PATTERN.test(token);
+}
 
 export async function createPullRequest(
   input: CreatePullRequestInput,
@@ -21,46 +29,45 @@ export async function createPullRequest(
   const resultPath = join(input.metaDir, "pr-result.json");
   let result: PullRequestResult;
 
-  const parsed = parseCommandLine(input.command);
-  if (!parsed || parsed.command !== "gh" || parsed.args[0] !== "pr" || parsed.args[1] !== "create") {
-    result = { status: "failed", reason: 'git.pr_command must start with "gh pr create".' };
+  const parsed = parsePullRequestCommand(input.command);
+  if (!parsed) {
+    result = {
+      status: "failed",
+      reason: 'git.pr_command must be a safe "gh pr create" command with allowed arguments only.'
+    };
     await writeFile(resultPath, JSON.stringify(result, null, 2), "utf8");
     return result;
   }
 
-  let auth;
-  try {
-    auth = await executor({
-      command: "gh",
-      args: ["auth", "status"],
-      cwd: input.cwd,
-      commandLogPath: input.commandLogPath
-    });
-  } catch (error) {
-    result = { status: "skipped", reason: formatError(error) };
+  const auth = await executor({
+    command: "gh",
+    args: ["auth", "status"],
+    cwd: input.cwd,
+    commandLogPath: input.commandLogPath
+  });
+  if (auth.spawnFailed) {
+    result = { status: "skipped", reason: auth.stderr || auth.all || "gh is not available." };
     await writeFile(resultPath, JSON.stringify(result, null, 2), "utf8");
     return result;
   }
   if (auth.exitCode !== 0) {
-    result = { status: "skipped", reason: auth.stderr || auth.all || "gh is not authenticated." };
+    result = {
+      status: "auth_required",
+      reason: auth.stderr || auth.all || "gh is not authenticated. Run `gh auth login`."
+    };
     await writeFile(resultPath, JSON.stringify(result, null, 2), "utf8");
     return result;
   }
 
-  let created;
-  try {
-    created = await executor({
-      command: parsed.command,
-      args: parsed.args,
-      cwd: input.cwd,
-      commandLogPath: input.commandLogPath
-    });
-  } catch (error) {
-    result = { status: "failed", reason: formatError(error) };
-    await writeFile(resultPath, JSON.stringify(result, null, 2), "utf8");
-    return result;
-  }
-  if (created.exitCode !== 0) {
+  const created = await executor({
+    command: parsed.command,
+    args: parsed.args,
+    cwd: input.cwd,
+    commandLogPath: input.commandLogPath
+  });
+  if (created.spawnFailed) {
+    result = { status: "skipped", reason: created.stderr || created.all || "gh is not available." };
+  } else if (created.exitCode !== 0) {
     result = {
       status: "failed",
       reason: created.stderr || created.all || `gh exited with code ${created.exitCode}`
@@ -73,8 +80,18 @@ export async function createPullRequest(
   return result;
 }
 
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+export function parsePullRequestCommand(input: string): { command: string; args: string[] } | null {
+  const parsed = parseCommandLine(input);
+  if (!parsed || parsed.command !== "gh" || parsed.args[0] !== "pr" || parsed.args[1] !== "create") {
+    return null;
+  }
+
+  const tokens = [parsed.command, ...parsed.args];
+  if (tokens.some((token) => !isSafePullRequestToken(token))) {
+    return null;
+  }
+
+  return parsed;
 }
 
 function parseCommandLine(input: string): { command: string; args: string[] } | null {

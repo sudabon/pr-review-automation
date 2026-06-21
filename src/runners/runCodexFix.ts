@@ -60,9 +60,7 @@ export async function runCodexFix(
   });
   const statusAfter = await readWorkingTreeSnapshot(input.cwd, input.commandLogPath, executor);
   const changed = statusBefore !== statusAfter;
-  const tokenLimitPattern = execResult.timedOut
-    ? undefined
-    : detectTokenLimitPattern({ result: execResult, fixer: "codex", config: input.config });
+  const tokenLimitPattern = detectTokenLimitPattern({ result: execResult, fixer: "codex", config: input.config });
   const tokenLimitFailure = tokenLimitPattern
     ? formatTokenLimitFailure("codex", execResult, tokenLimitPattern)
     : undefined;
@@ -115,6 +113,9 @@ export async function runCodexFix(
 }
 
 function formatExecutionFailure(fixer: string, result: ExecResult): string {
+  if (result.spawnFailed) {
+    return `${fixer} failed to start: ${result.stderr || result.all || "command not found"}`;
+  }
   const termination = result.signal
     ? ` was terminated by ${result.signal}`
     : result.isCanceled

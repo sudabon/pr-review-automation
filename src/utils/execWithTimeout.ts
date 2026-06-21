@@ -8,7 +8,7 @@ export interface ExecWithTimeoutOptions {
   cwd?: string;
   timeoutMs?: number;
   input?: string;
-  /** @deprecated Shell execution is intentionally unsupported. */
+  /** Shell execution is not supported and throws when set. */
   shell?: boolean;
   env?: NodeJS.ProcessEnv;
   outputPath?: string;
@@ -22,6 +22,7 @@ export interface ExecResult {
   stderr: string;
   all: string;
   timedOut: boolean;
+  spawnFailed?: boolean;
   signal?: string;
   isCanceled?: boolean;
   startedAt: string;
@@ -69,13 +70,16 @@ export const defaultExecutor: CommandExecutor = async (rawOptions) => {
 
     const endedAtDate = new Date();
     const all = subprocess.all ?? `${subprocess.stdout ?? ""}${subprocess.stderr ?? ""}`;
+    const spawnFailed =
+      completed.failed === true && completed.exitCode === undefined && !completed.timedOut && !terminatedBySignal;
     const result: ExecResult = {
       command: commandString,
-      exitCode: completed.exitCode ?? (completed.timedOut ? 124 : 1),
+      exitCode: completed.exitCode ?? (completed.timedOut ? 124 : spawnFailed ? 127 : 1),
       stdout: subprocess.stdout ?? "",
       stderr: subprocess.stderr ?? "",
       all,
       timedOut: Boolean(completed.timedOut),
+      spawnFailed: spawnFailed || undefined,
       signal: completed.signal,
       isCanceled: Boolean(completed.isCanceled),
       startedAt,
@@ -96,28 +100,48 @@ export const defaultExecutor: CommandExecutor = async (rawOptions) => {
       signal?: string;
       isCanceled?: boolean;
       message?: string;
+      code?: string;
+      errno?: number;
     };
 
-    if (!maybeError.timedOut) {
-      throw error;
+    if (maybeError.timedOut) {
+      const result: ExecResult = {
+        command: commandString,
+        exitCode: maybeError.exitCode ?? 124,
+        stdout: maybeError.stdout ?? "",
+        stderr: maybeError.stderr ?? maybeError.message ?? "",
+        all: maybeError.all ?? `${maybeError.stdout ?? ""}${maybeError.stderr ?? maybeError.message ?? ""}`,
+        timedOut: true,
+        signal: maybeError.signal,
+        isCanceled: Boolean(maybeError.isCanceled),
+        startedAt,
+        endedAt: endedAtDate.toISOString(),
+        durationMs: endedAtDate.getTime() - startedAtDate.getTime()
+      };
+
+      await persistExecResult(options, result);
+      return result;
     }
 
-    const result: ExecResult = {
-      command: commandString,
-      exitCode: maybeError.exitCode ?? 124,
-      stdout: maybeError.stdout ?? "",
-      stderr: maybeError.stderr ?? maybeError.message ?? "",
-      all: maybeError.all ?? `${maybeError.stdout ?? ""}${maybeError.stderr ?? maybeError.message ?? ""}`,
-      timedOut: Boolean(maybeError.timedOut),
-      signal: maybeError.signal,
-      isCanceled: Boolean(maybeError.isCanceled),
-      startedAt,
-      endedAt: endedAtDate.toISOString(),
-      durationMs: endedAtDate.getTime() - startedAtDate.getTime()
-    };
+    if (isSpawnError(maybeError)) {
+      const result: ExecResult = {
+        command: commandString,
+        exitCode: 127,
+        stdout: maybeError.stdout ?? "",
+        stderr: maybeError.stderr ?? maybeError.message ?? "",
+        all: maybeError.all ?? `${maybeError.stdout ?? ""}${maybeError.stderr ?? maybeError.message ?? ""}`,
+        timedOut: false,
+        spawnFailed: true,
+        startedAt,
+        endedAt: endedAtDate.toISOString(),
+        durationMs: endedAtDate.getTime() - startedAtDate.getTime()
+      };
 
-    await persistExecResult(options, result);
-    return result;
+      await persistExecResult(options, result);
+      return result;
+    }
+
+    throw error;
   }
 };
 
@@ -126,6 +150,10 @@ export async function execWithTimeout(
   executor: CommandExecutor = defaultExecutor
 ): Promise<ExecResult> {
   return executor(withDefaultTimeout(options));
+}
+
+function isSpawnError(error: { code?: string; errno?: number }): boolean {
+  return error.code === "ENOENT" || error.code === "ENOTDIR" || error.errno === -2;
 }
 
 function withDefaultTimeout(options: ExecWithTimeoutOptions): ExecWithTimeoutOptions {

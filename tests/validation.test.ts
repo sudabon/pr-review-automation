@@ -6,6 +6,25 @@ import { runValidation } from "../src/runners/runValidation.js";
 import { execResult, makeExecutor, withTempDir } from "./helpers.js";
 
 describe("validation runner", () => {
+  it("fails validation when every configured command is empty", async () => {
+    await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.commands.lint = "";
+      config.commands.typecheck = "";
+      config.commands.test = "";
+      config.commands.build = "";
+      const executor = makeExecutor(() => {
+        throw new Error("should not run");
+      });
+
+      const result = await runValidation(config, dir, join(dir, "validation"), undefined, executor);
+
+      expect(result.status).toBe("failed");
+      expect(result.all_steps_skipped).toBe(true);
+      expect(executor.calls).toHaveLength(0);
+    });
+  });
+
   it("runs validation commands in order, records failures, and skips empty commands", async () => {
     await withTempDir(async (dir) => {
       const config = createDefaultConfig("demo");

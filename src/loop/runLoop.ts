@@ -18,6 +18,12 @@ import { safeJsonParse } from "../utils/safeJsonParse.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
 import { detectRepeatedIssues } from "./detectRepeatedIssues.js";
 import { shouldContinue, type LoopDecision } from "./shouldContinue.js";
+import {
+  LOOP_HUMAN_REVIEW_STATUS,
+  mapDecisionToExternalStatus,
+  mapInternalStateToExternalStatus,
+  type RunLoopExternalStatus
+} from "./statusMapping.js";
 
 export interface RunLoopOptions {
   baseBranch: string;
@@ -37,7 +43,7 @@ export interface RunLoopInput {
 }
 
 export interface RunLoopResult {
-  status: "completed" | "failed" | "needs_human_review";
+  status: RunLoopExternalStatus;
   reason: string;
   runId: string;
   runDirectory: string;
@@ -220,7 +226,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         };
         await persistState(nextState);
         return {
-          status: "needs_human_review",
+          status: mapInternalStateToExternalStatus(LOOP_HUMAN_REVIEW_STATUS),
           reason,
           runId: runDirectory.runId,
           runDirectory: runDirectory.root
@@ -292,7 +298,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         };
         await persistState(nextState);
         return {
-          status: "needs_human_review",
+          status: mapInternalStateToExternalStatus(LOOP_HUMAN_REVIEW_STATUS),
           reason: fix.reason ?? "Human review required.",
           runId: runDirectory.runId,
           runDirectory: runDirectory.root
@@ -310,7 +316,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         };
         await persistState(nextState);
         return {
-          status: "needs_human_review",
+          status: mapInternalStateToExternalStatus(LOOP_HUMAN_REVIEW_STATUS),
           reason: fix.reason,
           runId: runDirectory.runId,
           runDirectory: runDirectory.root
@@ -429,8 +435,14 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
                   },
                   executor
                 );
-                if (pullRequest.status !== "created") {
-                  pullRequestFailure = `Pull request creation ${pullRequest.status}: ${pullRequest.reason}`;
+                if (pullRequest.status === "created") {
+                  // PR created successfully.
+                } else if (pullRequest.status === "auth_required") {
+                  pullRequestFailure = `Commit succeeded but pull request was not created because GitHub CLI is not authenticated. Run "gh auth login". ${pullRequest.reason}`;
+                } else if (pullRequest.status === "skipped") {
+                  pullRequestFailure = `Commit succeeded but pull request creation was skipped: ${pullRequest.reason}`;
+                } else {
+                  pullRequestFailure = `Commit succeeded but pull request creation failed: ${pullRequest.reason}`;
                 }
               } catch (error) {
                 pullRequestFailure = `Pull request creation failed: ${formatErrorMessage(error)}`;
@@ -450,7 +462,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
                   history
                 });
                 return {
-                  status: "needs_human_review",
+                  status: mapInternalStateToExternalStatus(LOOP_HUMAN_REVIEW_STATUS),
                   reason: resultReason,
                   runId: runDirectory.runId,
                   runDirectory: runDirectory.root,
@@ -462,8 +474,7 @@ export async function runLoop(input: RunLoopInput): Promise<RunLoopResult> {
         }
 
         return {
-          status:
-            decision.success ? "completed" : decision.status === "human_review_required" ? "needs_human_review" : "failed",
+          status: mapDecisionToExternalStatus(decision),
           reason: resultReason,
           runId: runDirectory.runId,
           runDirectory: runDirectory.root,

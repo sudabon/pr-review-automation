@@ -234,6 +234,38 @@ describe("fix runners", () => {
     });
   });
 
+  it("classifies token limits even when a fixer times out", async () => {
+    await withTempDir(async (dir) => {
+      const executor = makeExecutor((options) => {
+        if (options.command === "git") {
+          return execResult({ stdout: " M src/a.ts\n" });
+        }
+        return execResult({
+          exitCode: 124,
+          timedOut: true,
+          stderr: "rate limit exceeded after retries",
+          all: "rate limit exceeded after retries"
+        });
+      });
+
+      const result = await runFix(
+        {
+          config: createDefaultConfig("demo"),
+          cwd: dir,
+          fixDir: join(dir, "fix"),
+          review,
+          reviewJsonPath: "review.json",
+          dryRun: false
+        },
+        executor
+      );
+
+      expect(result.status).toBe("human_review_required");
+      expect(result.reason).toContain("token limit");
+      expect(result.attempts[0]?.status).toBe("token_limited");
+    });
+  });
+
   it("throws a specific error when a fixer times out", async () => {
     await withTempDir(async (dir) => {
       const executor = makeExecutor((options) =>

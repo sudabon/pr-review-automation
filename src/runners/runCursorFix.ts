@@ -45,9 +45,7 @@ export async function runCursorFix(
   });
   const statusAfter = await readWorkingTreeSnapshot(input.cwd, input.commandLogPath, executor);
   const changed = statusBefore !== statusAfter;
-  const tokenLimitPattern = execResult.timedOut
-    ? undefined
-    : detectTokenLimitPattern({ result: execResult, fixer: "cursor", config: input.config });
+  const tokenLimitPattern = detectTokenLimitPattern({ result: execResult, fixer: "cursor", config: input.config });
   const tokenLimitFailure = tokenLimitPattern
     ? formatTokenLimitFailure("cursor", execResult, tokenLimitPattern)
     : undefined;

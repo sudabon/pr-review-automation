@@ -19,7 +19,12 @@ export interface ValidationStepResult {
 export interface ValidationResult {
   status: "passed" | "failed";
   stop_on_validation_failure: boolean;
+  all_steps_skipped: boolean;
   steps: Record<ValidationStepName, ValidationStepResult>;
+}
+
+export function allValidationStepsSkipped(steps: Record<ValidationStepName, ValidationStepResult>): boolean {
+  return VALIDATION_ORDER.every((name) => steps[name].status === "skipped");
 }
 
 const VALIDATION_ORDER: ValidationStepName[] = ["lint", "typecheck", "test", "build"];
@@ -87,9 +92,12 @@ export async function runValidation(
     };
   }
 
+  const allStepsSkipped = allValidationStepsSkipped(steps);
   const validationResult: ValidationResult = {
-    status: Object.values(steps).some((step) => step.status === "failed") ? "failed" : "passed",
+    status:
+      Object.values(steps).some((step) => step.status === "failed") || allStepsSkipped ? "failed" : "passed",
     stop_on_validation_failure: config.limits.stop_on_validation_failure,
+    all_steps_skipped: allStepsSkipped,
     steps
   };
 

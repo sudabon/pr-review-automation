@@ -17,11 +17,13 @@ describe("execWithTimeout", () => {
   });
 
   it("throws spawn failures instead of converting them to timeout results", async () => {
-    await expect(
-      execWithTimeout({
-        command: `definitely-missing-ai-dev-loop-command-${Date.now()}`
-      })
-    ).rejects.toThrow();
+    const result = await execWithTimeout({
+      command: `definitely-missing-ai-dev-loop-command-${Date.now()}`
+    });
+
+    expect(result.spawnFailed).toBe(true);
+    expect(result.exitCode).toBe(127);
+    expect(result.timedOut).toBe(false);
   });
 
   it("reports signal termination as a non-zero failure", async () => {
