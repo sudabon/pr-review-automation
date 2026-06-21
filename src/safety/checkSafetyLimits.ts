@@ -1,5 +1,5 @@
 import type { Config } from "../config/schema.js";
-import { extractChangedFilePaths, filterDiff, matchesAnyPattern, type FilteredDiff } from "./filterDiff.js";
+import { filterDiff, matchesAnyPattern, type FilteredDiff } from "./filterDiff.js";
 
 export type SafetyStopReason = "max_changed_files" | "max_diff_lines" | "important_file_changed";
 

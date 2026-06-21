@@ -275,10 +275,11 @@ describe("git and logs", () => {
     expect(parsePullRequestCommand("gh issue create")).toBeNull();
   });
 
-  it("drops --fill when appending an explicit body", () => {
+  it("keeps --fill when appending an explicit body", () => {
     expect(appendBodyToPullRequestArgs(["pr", "create", "--fill"], "summary")).toEqual([
       "pr",
       "create",
+      "--fill",
       "--body",
       "summary"
     ]);
