@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Config } from "../config/schema.js";
 import { execWithTimeout, type CommandExecutor } from "../utils/execWithTimeout.js";
 
-export type ValidationStepName = "lint" | "typecheck" | "test" | "build";
+export type ValidationStepName = "install" | "lint" | "typecheck" | "test" | "build";
 export type ValidationStatus = "passed" | "failed" | "skipped";
 
 export interface ValidationStepResult {
@@ -18,6 +18,7 @@ export interface ValidationStepResult {
 
 export interface ValidationResult {
   status: "passed" | "failed";
+  allPassed: boolean;
   stop_on_validation_failure: boolean;
   all_steps_skipped: boolean;
   steps: Record<ValidationStepName, ValidationStepResult>;
@@ -27,7 +28,11 @@ export function allValidationStepsSkipped(steps: Record<ValidationStepName, Vali
   return VALIDATION_ORDER.every((name) => steps[name].status === "skipped");
 }
 
-const VALIDATION_ORDER: ValidationStepName[] = ["lint", "typecheck", "test", "build"];
+export function validationAllPassed(result: ValidationResult): boolean {
+  return result.allPassed;
+}
+
+const VALIDATION_ORDER: ValidationStepName[] = ["install", "lint", "typecheck", "test", "build"];
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9_@./:+,=\-]+$/;
 
 interface ParsedValidationCommand {
@@ -40,7 +45,8 @@ export async function runValidation(
   cwd: string,
   validationDir: string,
   commandLogPath?: string,
-  executor: CommandExecutor = execWithTimeout
+  executor: CommandExecutor = execWithTimeout,
+  loopNumber = 1
 ): Promise<ValidationResult> {
   await mkdir(validationDir, { recursive: true });
   const steps = {} as Record<ValidationStepName, ValidationStepResult>;
@@ -48,6 +54,11 @@ export async function runValidation(
   for (const name of VALIDATION_ORDER) {
     const command = config.commands[name].trim();
     const logPath = join(validationDir, `${name}.log`);
+
+    if (name === "install" && loopNumber > 1) {
+      steps[name] = { status: "skipped", exit_code: null, timed_out: false, stderr: "" };
+      continue;
+    }
 
     if (!command) {
       steps[name] = { status: "skipped", exit_code: null, timed_out: false, stderr: "" };
@@ -57,11 +68,7 @@ export async function runValidation(
     const parsedCommand = parseValidationCommand(command, config.project.package_manager);
     if (!parsedCommand) {
       const rejectionReason = validationCommandRejectionReason(command, config.project.package_manager);
-      await writeFile(
-        logPath,
-        `${rejectionReason}\n`,
-        "utf8"
-      );
+      await writeFile(logPath, `${rejectionReason}\n`, "utf8");
       steps[name] = {
         status: "failed",
         exit_code: 1,
@@ -77,7 +84,8 @@ export async function runValidation(
       args: parsedCommand.args,
       cwd,
       outputPath: logPath,
-      commandLogPath
+      commandLogPath,
+      step: `validation_${name}`
     });
 
     steps[name] = {
@@ -93,9 +101,10 @@ export async function runValidation(
   }
 
   const allStepsSkipped = allValidationStepsSkipped(steps);
+  const allPassed = computeAllPassed(steps);
   const validationResult: ValidationResult = {
-    status:
-      Object.values(steps).some((step) => step.status === "failed") || allStepsSkipped ? "failed" : "passed",
+    status: Object.values(steps).some((step) => step.status === "failed") || allStepsSkipped ? "failed" : "passed",
+    allPassed,
     stop_on_validation_failure: config.limits.stop_on_validation_failure,
     all_steps_skipped: allStepsSkipped,
     steps
@@ -103,6 +112,13 @@ export async function runValidation(
 
   await writeFile(join(validationDir, "validation-result.json"), JSON.stringify(validationResult, null, 2), "utf8");
   return validationResult;
+}
+
+function computeAllPassed(steps: Record<ValidationStepName, ValidationStepResult>): boolean {
+  const required: ValidationStepName[] = ["lint", "typecheck", "test"];
+  const requiredPassed = required.every((name) => steps[name].status === "passed");
+  const buildOk = steps.build.status === "passed" || steps.build.status === "skipped";
+  return requiredPassed && buildOk;
 }
 
 const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"] as const;
@@ -134,13 +150,27 @@ export function parseValidationCommand(
     };
   }
 
-  const [command, run, script, ...rest] = tokens;
-  if (command !== packageManager || run !== "run" || !script) {
+  const [command, second, third, ...rest] = tokens;
+  if (!PACKAGE_MANAGERS.includes(command as (typeof PACKAGE_MANAGERS)[number])) {
     return null;
+  }
+
+  if (command !== packageManager) {
+    return null;
+  }
+
+  if (second === "run") {
+    if (!third) {
+      return null;
+    }
+    return {
+      command,
+      args: ["run", third, ...rest]
+    };
   }
 
   return {
     command,
-    args: ["run", script, ...rest]
+    args: [second, third, ...rest].filter(Boolean) as string[]
   };
 }

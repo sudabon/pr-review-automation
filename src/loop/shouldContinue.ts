@@ -1,6 +1,8 @@
 import type { Config } from "../config/schema.js";
 import { hasImportantIssues, type FinalResult } from "../runners/reviewSchemas.js";
 import type { ValidationResult } from "../runners/runValidation.js";
+import { validationAllPassed } from "../runners/runValidation.js";
+import { hasOnlyNitIssues, isNitOnlySuccess, isSuccess } from "./isSuccess.js";
 
 export type LoopDecisionAction = "continue" | "stop";
 
@@ -84,8 +86,23 @@ export function shouldContinue(input: LoopDecisionInput): LoopDecision {
     };
   }
 
-  if (input.finalResult.decision === "approved") {
-    return { action: "stop", status: "approved", reason: input.finalResult.reason, success: true };
+  if (isSuccess(input) || isNitOnlySuccess(input)) {
+    const reason = isNitOnlySuccess(input)
+      ? "Only nit-level remaining issues were found and validation passed."
+      : input.finalResult.reason;
+    return { action: "stop", status: "approved", reason, success: true };
+  }
+
+  if (input.finalResult.decision === "approved" && !validationAllPassed(input.validationResult)) {
+    if (input.loopNumber >= input.maxLoops) {
+      return { action: "stop", status: "max_loops", reason: "Maximum loop count reached.", success: false };
+    }
+    return {
+      action: "continue",
+      status: "needs_changes",
+      reason: "Final review approved the changes, but validation did not fully pass.",
+      success: false
+    };
   }
 
   if (input.allFixersTokenLimited) {
@@ -122,6 +139,15 @@ export function shouldContinue(input: LoopDecisionInput): LoopDecision {
 
   if (input.loopNumber >= input.maxLoops) {
     return { action: "stop", status: "max_loops", reason: "Maximum loop count reached.", success: false };
+  }
+
+  if (hasOnlyNitIssues(input.finalResult) && validationAllPassed(input.validationResult)) {
+    return {
+      action: "stop",
+      status: "approved",
+      reason: "Only nit-level remaining issues were found and validation passed.",
+      success: true
+    };
   }
 
   if (

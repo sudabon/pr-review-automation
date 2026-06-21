@@ -1,8 +1,5 @@
-# validation-pipeline Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after archive.
-## Requirements
 ### Requirement: 検証コマンドの順次実行
 システムは設定 `commands` の `install`（ループ 1 のみ、定義時）・`lint` / `typecheck` / `test` / `build` を定義された順に実行しなければならない（SHALL）。各コマンドの標準出力・標準エラーを `validation/<name>.log` に保存しなければならない（SHALL）。設定でコマンドが未定義（空）の項目は実行せず `skipped` として扱わなければならない（SHALL）。
 
@@ -28,11 +25,3 @@ TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after arch
 #### Scenario: allPassed の判定
 - **WHEN** lint / typecheck / test がすべて passed で build が skipped である
 - **THEN** `allPassed` は true である
-
-### Requirement: 検証失敗時の継続方針
-設定 `limits.stop_on_validation_failure` が true の場合、検証失敗時点でシステムはそのループの後続ステップ（最終レビュー）に失敗を伝え、ループ制御に判断を委ねなければならない（SHALL）。false の場合は検証失敗があっても最終レビューまで処理を継続しなければならない（SHALL）。
-
-#### Scenario: 失敗時継続
-- **WHEN** `stop_on_validation_failure` が false で typecheck が失敗する
-- **THEN** 処理は最終レビューまで継続し、検証失敗は最終判定の入力として渡される
-

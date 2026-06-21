@@ -1,8 +1,5 @@
-# run-configuration Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after archive.
-## Requirements
 ### Requirement: 設定ファイルのスキーマと読み込み
 システムは `.ai-dev-loop/config.yml` を YAML として読み込み、スキーマ検証（zod 等）を行わなければならない（SHALL）。設定は最低限 `project`（name / package_manager / base_branch）、`agents`（main_reviewer / fixers / fixer_mode）、`limits`（max_loops / max_same_issue_repeats / stop_on_validation_failure / test_failure_degradation_limit / max_changed_files / max_diff_lines / lockfile_change_warn_lines / abnormal_diff_line_threshold）、`commands`（install / lint / typecheck / test / build）、`git`（use_worktree / commit_on_success / create_pr_on_success / pr_command）、`safety`（important_file_patterns）、`claude` / `codex` / `cursor`（command / timeout）の各セクションを表現できなければならない（SHALL）。`claude` には `review_timeout_sec` と `final_review_timeout_sec` を個別に設定できなければならない（SHALL）。
 
@@ -28,22 +25,3 @@ TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after arch
 #### Scenario: stop_on_validation_failure の既定
 - **WHEN** `limits.stop_on_validation_failure` が設定ファイルに存在しない
 - **THEN** 既定値 `false` が適用される（原典仕様 §6 に準拠）
-
-### Requirement: 設定ファイルの未存在
-`run` 実行時に `.ai-dev-loop/config.yml` が存在しない場合、システムは `ai-dev-loop init` の実行を促すエラーメッセージを表示し、非ゼロ終了コードで終了しなければならない（SHALL）。
-
-#### Scenario: 設定未生成での run
-- **WHEN** `.ai-dev-loop/config.yml` が存在しない状態で `ai-dev-loop run` を実行する
-- **THEN** init を促すエラーを表示し、ループを開始せず非ゼロ終了コードで終了する
-
-### Requirement: init による既定設定の生成
-`ai-dev-loop init` は、対象リポジトリに既定値で埋めた `.ai-dev-loop/config.yml` を生成しなければならない（SHALL）。既に設定ファイルが存在する場合は上書きせず、その旨を通知しなければならない（SHALL）。
-
-#### Scenario: 新規生成
-- **WHEN** 設定ファイルが存在しない状態で `ai-dev-loop init` を実行する
-- **THEN** 既定値の `.ai-dev-loop/config.yml` が生成される
-
-#### Scenario: 既存設定の保護
-- **WHEN** 既に `.ai-dev-loop/config.yml` が存在する状態で `ai-dev-loop init` を実行する
-- **THEN** 既存ファイルは上書きされず、既に存在する旨が通知される
-

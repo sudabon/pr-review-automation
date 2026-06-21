@@ -14,7 +14,8 @@ export async function commitChanges(
     command: "git",
     args: ["status", "--porcelain"],
     cwd: input.cwd,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "git_status"
   });
   if (status.exitCode !== 0) {
     throw new Error(`Failed to inspect git status before commit: ${formatFailure(status)}`);
@@ -27,7 +28,8 @@ export async function commitChanges(
     command: "git",
     args: ["add", "-A"],
     cwd: input.cwd,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "git_add"
   });
   if (add.exitCode !== 0) {
     throw new Error(`Failed to stage changes: ${formatFailure(add)}`);
@@ -37,7 +39,8 @@ export async function commitChanges(
     command: "git",
     args: ["commit", "-m", input.message ?? "Apply AI dev loop fixes"],
     cwd: input.cwd,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "git_commit"
   });
   if (commit.exitCode !== 0) {
     throw new Error(`Failed to commit changes: ${formatFailure(commit)}`);

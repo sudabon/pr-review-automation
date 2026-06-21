@@ -13,6 +13,7 @@ export interface ExecWithTimeoutOptions {
   env?: NodeJS.ProcessEnv;
   outputPath?: string;
   commandLogPath?: string;
+  step?: string;
 }
 
 export interface ExecResult {
@@ -178,7 +179,8 @@ async function persistExecResult(options: ExecWithTimeoutOptions, result: ExecRe
       timed_out: result.timedOut,
       signal: result.signal,
       is_canceled: result.isCanceled,
-      duration_ms: result.durationMs
+      duration_ms: result.durationMs,
+      step: options.step
     });
   }
 }

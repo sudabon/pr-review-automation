@@ -11,11 +11,19 @@ TBD - created by archiving change add-ai-dev-loop-mvp. Update Purpose after arch
 - **THEN** `fix-pr-comments` スキルがレビューコメントを入力として起動され、重要度の高い指摘から修正が適用される
 
 ### Requirement: 修正担当エージェントの優先順位
-修正担当エージェントは設定 `agents.fixers` の並び順で優先順位を持ち、既定は 1 番手 Codex・2 番手 Cursor Agent でなければならない（SHALL）。各ループでは優先順位の先頭エージェント（既定 Codex）を active fixer として修正を担当させなければならない（SHALL）。
+修正担当エージェントは設定 `agents.fixers` の並び順で優先順位を持ち、既定は 1 番手 Codex・2 番手 Cursor Agent でなければならない（SHALL）。`agents.fixer_mode` が `sequential`（既定）の場合、各ループで fixers 配列の全エージェントを順に実行しなければならない（SHALL）。`failover` の場合は先頭エージェントのみを active fixer として実行し、トークン超過時に次へ交代する（SHALL）。
+
+#### Scenario: sequential モードでの全担当実行
+- **WHEN** `fixer_mode` が sequential で修正フェーズが開始される
+- **THEN** Codex 修正の後に Cursor 修正が実行される
+
+#### Scenario: failover モードでの先頭のみ実行
+- **WHEN** `fixer_mode` が failover で Codex が正常完了する
+- **THEN** Cursor は実行されない
 
 #### Scenario: 既定の担当順
 - **WHEN** 修正フェーズが開始され `agents.fixers` が未指定（既定）である
-- **THEN** Codex が 1 番手の active fixer として修正を担当し、Cursor Agent が 2 番手として控える
+- **THEN** Codex が 1 番手、Cursor Agent が 2 番手として順に実行される（sequential 時）
 
 ### Requirement: トークン超過時の自動担当者交代
 active fixer の CLI がサブスクリプションのトークン超過（クォータ超過・レート上限）を示した場合、システムは自動的に優先順位の次のエージェントへ担当を交代（フェイルオーバー）し、未対応のコメントから修正を継続しなければならない（SHALL）。担当交代の事実（交代元・交代先・時刻・理由）を run の記録（`meta/loop-state.json` または `meta/command-log.jsonl`）に残さなければならない（SHALL）。優先順位の全エージェントがトークン超過に達した場合、システムは修正を停止し、人間レビューへ差し戻さなければならない（SHALL）。
@@ -47,9 +55,13 @@ Cursor が active fixer（トークン超過による交代後、または設定
 - **THEN** 未対応コメントに対する修正が適用され、`fix/cursor-prompt.md` と `fix/cursor-output.md` が保存される
 
 ### Requirement: dry-run 時の修正スキップ
-`--dry-run` が指定された場合、システムは `fix-pr-comments` による修正（Codex / Cursor いずれの担当でも）を実行してはならない（SHALL NOT）。
+`--dry-run` が指定された場合、システムは `fix-pr-comments` による修正（Codex / Cursor いずれの担当でも）を実行してはならない（SHALL NOT）。ただし Codex / Cursor 向けプロンプトファイル（`fix/codex-prompt.md`、`fix/cursor-prompt.md`）の生成は行わなければならない（SHALL）。
 
-#### Scenario: dry-run での修正抑止
+#### Scenario: dry-run でのプロンプト生成
 - **WHEN** `--dry-run` を指定して実行する
-- **THEN** 修正は実行されず、作業ツリーへの変更も適用されない
+- **THEN** `fix/codex-prompt.md` と `fix/cursor-prompt.md` が生成されるが、作業ツリーへの変更は適用されない
+
+#### Scenario: dry-run での CLI 実行抑止
+- **WHEN** `--dry-run` を指定して実行する
+- **THEN** Codex / Cursor CLI は起動されない
 

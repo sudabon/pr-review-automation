@@ -13,6 +13,7 @@ export interface CommandLogEntry {
   duration_ms?: number;
   event?: string;
   reason?: string;
+  step?: string;
 }
 
 export async function writeCommandLog(logPath: string, entry: CommandLogEntry): Promise<void> {

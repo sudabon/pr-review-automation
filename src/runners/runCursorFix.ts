@@ -41,7 +41,8 @@ export async function runCursorFix(
     cwd: input.cwd,
     timeoutMs: input.config.cursor.timeout_sec * 1000,
     outputPath,
-    commandLogPath: input.commandLogPath
+    commandLogPath: input.commandLogPath,
+    step: "cursor_fix"
   });
   const statusAfter = await readWorkingTreeSnapshot(input.cwd, input.commandLogPath, executor);
   const changed = statusBefore !== statusAfter;

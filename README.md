@@ -1,108 +1,124 @@
 # ai-dev-loop
 
-`ai-dev-loop` is a local CLI that automates a controlled development loop:
+`ai-dev-loop` は、制御された開発ループを自動化するローカル CLI です。
 
-1. collect the Git diff
-2. ask Claude to review it
-3. ask a configured fixer, Codex first and Cursor second by default, to address review comments
-4. run validation commands
-5. ask Claude for a final decision
-6. repeat until approved, stopped, or handed back for human review
+1. Git の差分を収集する
+2. Claude にレビューを依頼する
+3. 設定された fixer にレビューコメントの対応を依頼する。既定では Codex → Cursor を各ループで逐次実行する。MVP 互換の先頭 fixer のみ実行は `agents.fixer_mode: failover` を指定する
+4. 検証コマンドを実行する
+5. Claude に最終判断を依頼する
+6. 承認・停止・人間によるレビューへの引き渡しのいずれかになるまで繰り返す
 
-The tool wraps locally authenticated subscription CLIs. It does not call paid API endpoints directly.
+このツールは、ローカルで認証済みのサブスクリプション CLI をラップします。有料 API エンドポイントを直接呼び出すことはありません。
 
-## Requirements
+## 必要条件
 
 - Node.js 20+
 - Git
-- `claude` CLI authenticated locally
-- `codex` CLI authenticated locally when Codex is enabled as a fixer
-- `agent` CLI authenticated locally when Cursor Agent is enabled as a fixer
-- `gh` authenticated when the review/fix skills need PR context
-- `pr-review-toolkit:review-pr` and `fix-pr-comments` available in the agent environment
+- ローカルで認証済みの `claude` CLI
+- Codex を fixer として有効にする場合は、ローカルで認証済みの `codex` CLI
+- Cursor Agent を fixer として有効にする場合は、ローカルで認証済みの `agent` CLI
+- レビュー／修正スキルで PR コンテキストが必要な場合は、認証済みの `gh`
+- エージェント環境で `pr-review-toolkit:review-pr` と `fix-pr-comments` が利用可能であること
 
-## Setup
+## セットアップ
 
-Install dependencies and build:
+依存関係のインストールとビルド:
 
 ```bash
 pnpm install
 pnpm run build
 ```
 
-Create the local config:
+ローカル設定の作成:
 
 ```bash
 pnpm cli init
 ```
 
-This writes `.ai-dev-loop/config.yml` if it does not already exist. Existing config files are never overwritten.
+これにより、`.ai-dev-loop/config.yml` がまだ存在しない場合に書き込まれます。既存の設定ファイルは上書きされません。
 
-## Usage
+## 使い方
 
-Run the full loop against the configured base branch:
+設定されたベースブランチに対してフルループを実行:
 
 ```bash
 pnpm cli run
 ```
 
-Review only, without fixers, validation, or final review:
+fixer、検証、最終レビューなしでレビューのみ実行:
 
 ```bash
 pnpm cli run --only-review
 ```
 
-Run without applying fixer changes:
+fixer の変更を適用せずに実行:
 
 ```bash
 pnpm cli run --dry-run
 ```
 
-Override base branch and loop count:
+ベースブランチとループ回数を上書き:
 
 ```bash
 pnpm cli run --base main --max-loops 1
 ```
 
-Resume a previous run:
+以前の実行を再開:
 
 ```bash
 pnpm cli run --resume 2026-06-19T10-00-00-000Z-abc123
 ```
 
-Disable success commits:
+成功時のコミットを無効化:
 
 ```bash
 pnpm cli run --no-commit
 ```
 
-To create a pull request after a successful automatic commit, set
-`git.create_pr_on_success: true`. The configured `git.pr_command` must begin
-with `gh pr create`; the default is `gh pr create --fill`. PR creation results
-are recorded, and a creation failure stops the run for human follow-up.
+自動コミット成功後にプルリクエストを作成するには、`git.create_pr_on_success: true` を設定してください。設定された `git.pr_command` は `gh pr create` で始まる必要があります。デフォルトは `gh pr create --fill` です。PR 作成結果は `meta/pr-result.json` に記録され、PR 作成に失敗しても run 全体の成功ステータスは取り消されません。
 
-To use a temporary branch in the current checkout instead of a linked worktree,
-set `git.worktree_mode: branch`. This mode requires a clean working tree.
+### fixer_mode
 
-## Artifacts
+- `sequential`（既定）: 各ループで設定された fixer をすべて順に実行する（Codex → Cursor）
+- `failover`: 先頭 fixer のみを実行し、トークン上限などの失敗時に次の fixer へ交代する
 
-Each run writes files under `.ai-dev-loop/runs/<run_id>/`:
+### 安全策
+
+ループは修正前と検証後に安全策チェックを適用します。
+
+- `.ai-dev-loopignore` でレビュー入力から除外するパターンを指定できます。ファイルがない場合は `node_modules/`、lockfile、ビルド成果物などの既定パターンが使われます。
+- `limits.max_changed_files` と `limits.max_diff_lines` を超えるとループを停止します。
+- `safety.important_file_patterns` に一致する重要ファイル（`.env*`、migrations、workflow など）の変更時は自動修正を止め、人間レビューを要求します。
+- lockfile の大規模変更は `meta/safety-warnings.json` に警告として記録し、最終レビューへ渡します。
+
+### dry-run
+
+`--dry-run` では Claude レビューと `fix/codex-prompt.md` / `fix/cursor-prompt.md` の生成まで行い、Codex / Cursor CLI は起動しません。
+
+リンクされた worktree の代わりに、現在のチェックアウトで一時ブランチを使うには、`git.worktree_mode: branch` を設定してください。このモードではクリーンな作業ツリーが必要です。
+
+## 成果物
+
+各実行は `.ai-dev-loop/runs/<run_id>/` 配下にファイルを書き込みます。
 
 - `input/diff.patch`
 - `input/status.txt`
+- `input/project-summary.md`
 - `review/claude-review.md`
 - `review/review.json`
-- `fix/codex-prompt.md` and `fix/codex-output.md`
-- `fix/cursor-prompt.md` and `fix/cursor-output.md`
+- `fix/codex-prompt.md` と `fix/codex-output.md`
+- `fix/cursor-prompt.md` と `fix/cursor-output.md`
 - `validation/*.log`
 - `validation/validation-result.json`
 - `final/claude-final-review.md`
 - `final/final-result.json`
 - `meta/command-log.jsonl`
 - `meta/loop-state.json`
-- `meta/pr-result.json` when automatic PR creation is enabled
+- lockfile などの警告がある場合は `meta/safety-warnings.json`
+- 自動 PR 作成が有効な場合は `meta/pr-result.json`
 
-## Verification
+## 検証
 
 ```bash
 pnpm run verify

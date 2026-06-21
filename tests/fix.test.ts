@@ -53,13 +53,17 @@ describe("fix runners", () => {
       );
 
       expect(result.status).toBe("skipped");
-      expect(await readFile(result.outputPaths[0]!, "utf8")).toContain("Dry run");
+      expect(result.outputPaths).toHaveLength(2);
+      expect(await readFile(result.outputPaths[0]!, "utf8")).toContain("fix-pr-comments");
+      expect(await readFile(result.outputPaths[1]!, "utf8")).toContain("fix-pr-comments");
       expect(executor.calls).toHaveLength(0);
     });
   });
 
   it("runs the first configured fixer and prioritizes major comments", async () => {
     await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixer_mode = "failover";
       let status = "";
       const executor = makeExecutor((options) => {
         if (options.command === "git") {
@@ -70,7 +74,7 @@ describe("fix runners", () => {
       });
       const result = await runFix(
         {
-          config: createDefaultConfig("demo"),
+          config,
           cwd: dir,
           fixDir: join(dir, "fix"),
           review,
@@ -92,6 +96,8 @@ describe("fix runners", () => {
 
   it("fails over to Cursor when Codex reports token limits", async () => {
     await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixer_mode = "failover";
       let status = "";
       const executor = makeExecutor((options) => {
         if (options.command === "git") {
@@ -106,7 +112,7 @@ describe("fix runners", () => {
 
       const result = await runFix(
         {
-          config: createDefaultConfig("demo"),
+          config,
           cwd: dir,
           fixDir: join(dir, "fix"),
           review,
@@ -129,6 +135,8 @@ describe("fix runners", () => {
 
   it("does not fail over when Codex fails normally", async () => {
     await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixer_mode = "failover";
       const executor = makeExecutor((options) => {
         if (options.command === "git") {
           return execResult();
@@ -142,7 +150,7 @@ describe("fix runners", () => {
       await expect(
         runFix(
           {
-            config: createDefaultConfig("demo"),
+            config,
             cwd: dir,
             fixDir: join(dir, "fix"),
             review,
@@ -184,13 +192,15 @@ describe("fix runners", () => {
 
   it("fails over on no_changes and returns it only after the final fixer", async () => {
     await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixer_mode = "failover";
       const executor = makeExecutor((options) =>
         options.command === "git" ? execResult() : execResult({ stdout: "nothing to apply" })
       );
 
       const result = await runFix(
         {
-          config: createDefaultConfig("demo"),
+          config,
           cwd: dir,
           fixDir: join(dir, "fix"),
           review,
@@ -236,6 +246,8 @@ describe("fix runners", () => {
 
   it("classifies token limits even when a fixer times out", async () => {
     await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixer_mode = "failover";
       const executor = makeExecutor((options) => {
         if (options.command === "git") {
           return execResult({ stdout: " M src/a.ts\n" });
@@ -250,7 +262,7 @@ describe("fix runners", () => {
 
       const result = await runFix(
         {
-          config: createDefaultConfig("demo"),
+          config,
           cwd: dir,
           fixDir: join(dir, "fix"),
           review,
@@ -268,6 +280,8 @@ describe("fix runners", () => {
 
   it("throws a specific error when a fixer times out", async () => {
     await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixer_mode = "failover";
       const executor = makeExecutor((options) =>
         options.command === "git"
           ? execResult()
@@ -277,7 +291,7 @@ describe("fix runners", () => {
       await expect(
         runFix(
           {
-            config: createDefaultConfig("demo"),
+            config,
             cwd: dir,
             fixDir: join(dir, "fix"),
             review,
@@ -323,6 +337,8 @@ describe("fix runners", () => {
 
   it("returns human review when all fixers hit token limits", async () => {
     await withTempDir(async (dir) => {
+      const config = createDefaultConfig("demo");
+      config.agents.fixer_mode = "failover";
       const executor = makeExecutor((options) =>
         options.command === "git"
           ? execResult()
@@ -330,7 +346,7 @@ describe("fix runners", () => {
       );
       const result = await runFix(
         {
-          config: createDefaultConfig("demo"),
+          config,
           cwd: dir,
           fixDir: join(dir, "fix"),
           review,
